@@ -2,3 +2,5 @@ android/.gradle/
 android/build/
 android/app/build/
 android/local.properties
+briefing/out/
+briefing/settings.local.md

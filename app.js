@@ -49,9 +49,17 @@ function defaults() {
   };
 }
 
+/* Phase 2: the morning briefing is a private claude.ai page that a scheduled Claude routine
+   refreshes on weekdays. Change the link in Settings when using another Claude account. */
+const BRIEFING_DEFAULT = 'https://claude.ai/artifact/Hxr4SUGNBZVTyitSkArRPD';
+function upgrade(s) {
+  if (s.briefingUrl === undefined) s.briefingUrl = BRIEFING_DEFAULT;
+  if (!s.briefingAt) s.briefingAt = '08:15';
+  return s;
+}
 function load() {
-  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.v === 1) return s; } catch { /* fresh start */ }
-  return defaults();
+  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.v === 1) return upgrade(s); } catch { /* fresh start */ }
+  return upgrade(defaults());
 }
 let S = load();
 function save(quiet) {
@@ -208,9 +216,10 @@ function sendReminders() {
   const list = [];
   if (S.remindersOn) {
     const now = Date.now(), today = startOfDay(new Date());
-    const add = (id, when, title, body) => { if (when.getTime() > now + 30e3) list.push({ id, at: when.getTime(), title, body }); };
+    const add = (id, when, title, body, url) => { if (when.getTime() > now + 30e3) list.push({ id, at: when.getTime(), title, body, url: url || '' }); };
     for (let i = 0; i < 7; i++) {
       const d = addDays(today, i), p = prof(d), log = peekLog(d), we = isWeekend(d);
+      if (!we && S.briefingUrl) add(i * 10 + 7, at(d, S.briefingAt), 'Your morning briefing is ready', 'Email, calendar, Teams and Slack, sorted by Kikker. Tap to open.', S.briefingUrl);
       const plan = morningPlan(d);
       add(i * 10 + 1, plan.wake, plan.act === 'bike' ? 'Good morning! Bike time' : 'Good morning', plan.why);
       if (!listDone(we ? 'weekendHome' : 'home', log)) {
@@ -288,6 +297,11 @@ function checklist(list, log) {
 function renderToday(now, today, bl, log) {
   const cur = bl.find((b) => now >= b.start && now < b.end);
   const html = [];
+  if (!isWeekend(now) && S.briefingUrl && now.getHours() < 17) {
+    const ready = now >= at(today, S.briefingAt);
+    html.push(`<a class="brief" href="${esc(S.briefingUrl)}" target="_blank" rel="noopener">
+      <span class="bicon" aria-hidden="true">☀</span><span><b>Morning briefing</b><small>${ready ? 'Email, calendar, Teams and Slack, sorted. Tap to open.' : `Ready around ${fmt(at(today, S.briefingAt))}.`}</small></span><span class="arrow" aria-hidden="true">›</span></a>`);
+  }
   if (!S.loc) {
     html.push(`<div class="card"><b>Let Kikker check the sunrise</b><p class="note" style="margin:0">Your location is used only for the morning weather, and stays on this phone.</p><div class="row"><button class="btn primary" data-act="gps">Use my location</button><button class="btn" data-act="tab" data-tab="settings">Search a town</button></div></div>`);
   }
@@ -441,6 +455,10 @@ function renderSettings() {
       <div class="row"><button class="btn" data-act="gps">Use my location</button></div>
       <form class="row" id="locForm"><input id="locQ" type="search" placeholder="Search a town" style="flex:1;min-width:0;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg)"><button class="btn">Search</button></form>
       <div id="locRes" class="row"></div></div>
+    <h2>Morning briefing <small>weekdays</small></h2>
+    <div class="card"><label class="field">Briefing page link<input id="sBrief" type="url" value="${esc(S.briefingUrl)}" placeholder="https://claude.ai/artifact/…"></label>
+      <label class="field">Remind me at<input id="sBriefAt" type="time" value="${S.briefingAt}"></label>
+      <p class="note" style="margin:0">A scheduled Claude routine refreshes this private page at 8:00 on weekdays. Using a different Claude account? Paste that account's briefing link here. Leave it blank to hide the briefing.</p></div>
     <h2>Weekdays</h2><div class="card">${times('weekday')}</div>
     <h2>Weekends</h2><div class="card">${times('weekend')}</div>
     <h2>Checklists <small>one item per line</small></h2>
@@ -552,6 +570,12 @@ document.addEventListener('change', (e) => {
     save(); toast('Checklist saved'); return;
   }
   if (t.id === 'sName') { S.name = t.value.trim(); save(true); render(); return; }
+  if (t.id === 'sBrief') {
+    const v = t.value.trim();
+    if (v && !/^https:\/\//.test(v)) { toast('The link should start with https://'); return; }
+    S.briefingUrl = v; save(); toast(v ? 'Briefing link saved' : 'Briefing hidden'); return;
+  }
+  if (t.id === 'sBriefAt') { if (t.value) { S.briefingAt = t.value; save(); toast('Saved'); } return; }
   if (t.id === 'remOn') { S.remindersOn = t.checked; save(); return; }
 });
 

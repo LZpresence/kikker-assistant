@@ -28,7 +28,7 @@ object Reminders {
         val am = ctx.getSystemService(AlarmManager::class.java) ?: return
         // cancel everything we set last time
         prefs.getString("ids", "")!!.split(',').filter { it.isNotBlank() }.forEach { id ->
-            am.cancel(pending(ctx, id.toInt(), "", ""))
+            am.cancel(pending(ctx, id.toInt(), "", "", ""))
         }
         val list = try { JSONArray(json) } catch (e: Exception) { JSONArray() }
         val ids = mutableListOf<Int>()
@@ -38,7 +38,7 @@ object Reminders {
             val at = r.getLong("at")
             if (at <= now) continue
             val id = r.getInt("id")
-            am.setWindow(AlarmManager.RTC_WAKEUP, at, 5 * 60_000L, pending(ctx, id, r.optString("title"), r.optString("body")))
+            am.setWindow(AlarmManager.RTC_WAKEUP, at, 5 * 60_000L, pending(ctx, id, r.optString("title"), r.optString("body"), r.optString("url")))
             ids += id
         }
         prefs.edit().putString("json", json).putString("ids", ids.joinToString(",")).apply()
@@ -50,8 +50,8 @@ object Reminders {
         schedule(ctx, json)
     }
 
-    private fun pending(ctx: Context, id: Int, title: String, body: String): PendingIntent {
-        val i = Intent(ctx, ReminderReceiver::class.java).putExtra("id", id).putExtra("title", title).putExtra("body", body)
+    private fun pending(ctx: Context, id: Int, title: String, body: String, url: String): PendingIntent {
+        val i = Intent(ctx, ReminderReceiver::class.java).putExtra("id", id).putExtra("title", title).putExtra("body", body).putExtra("url", url)
         return PendingIntent.getBroadcast(ctx, id, i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 
@@ -65,15 +65,18 @@ object Reminders {
         }
     }
 
-    fun show(ctx: Context, id: Int, title: String, body: String) {
+    /** Shows a reminder. With a [url] (the morning briefing), tapping it opens that page instead of the app. */
+    fun show(ctx: Context, id: Int, title: String, body: String, url: String = "") {
         if (Build.VERSION.SDK_INT >= 33 &&
             ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
         ensureChannel(ctx)
-        val open = PendingIntent.getActivity(
-            ctx, 0, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
+        val target = if (url.startsWith("https://")) {
+            Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        } else {
+            Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        val open = PendingIntent.getActivity(ctx, id, target, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val n = NotificationCompat.Builder(ctx, CHANNEL)
             .setSmallIcon(R.drawable.ic_notify)
             .setColor(0xFF2F625F.toInt())
@@ -90,7 +93,10 @@ object Reminders {
 
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        Reminders.show(context, intent.getIntExtra("id", 0), intent.getStringExtra("title") ?: "Kikker", intent.getStringExtra("body") ?: "")
+        Reminders.show(
+            context, intent.getIntExtra("id", 0), intent.getStringExtra("title") ?: "Kikker",
+            intent.getStringExtra("body") ?: "", intent.getStringExtra("url") ?: "",
+        )
     }
 }
 
