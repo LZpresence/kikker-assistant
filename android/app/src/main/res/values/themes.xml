@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Kikker" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#1d3b57</item>
+        <item name="android:navigationBarColor">#0d1720</item>
+        <item name="android:windowBackground">@color/sky</item>
+    </style>
+    <color name="sky">#1d3b57</color>
+</resources>

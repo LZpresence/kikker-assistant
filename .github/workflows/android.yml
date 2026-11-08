@@ -1,0 +1,72 @@
+name: Android app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.9'
+
+      # One signing key for every build, so updates install over the old app.
+      # Created on the first run and committed back ([skip ci] stops a rebuild loop).
+      - name: Create signing key if missing
+        run: |
+          if [ ! -f android/app/kikker.p12 ]; then
+            keytool -genkeypair -v -storetype PKCS12 -keystore android/app/kikker.p12 \
+              -alias kikker -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass kikker -keypass kikker -dname "CN=Kikker Assistant"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add android/app/kikker.p12
+            git commit -m "Add Android signing key [skip ci]"
+            git push
+          fi
+
+      - name: Build APK
+        working-directory: android
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Name the APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk kikker-assistant.apk
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-v${{ github.run_number }}
+          name: Kikker Assistant for Android (build ${{ github.run_number }})
+          body: |
+            On your Android phone, download **kikker-assistant.apk** below and open it to install.
+            Then open Kikker and allow notifications and location.
+          files: kikker-assistant.apk
+          make_latest: true
+
+      # Also serve the APK from the website: a plain link with no redirect,
+      # which phone browsers download more reliably than release assets.
+      - name: Publish APK on the website
+        run: |
+          mkdir -p download
+          cp kikker-assistant.apk download/kikker-assistant.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add download/kikker-assistant.apk
+          git commit -m "Update APK download (build ${{ github.run_number }}) [skip ci]"
+          git pull --rebase origin main
+          git push origin HEAD:main
