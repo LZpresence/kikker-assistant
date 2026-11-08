@@ -36,7 +36,9 @@ link), and create a scheduled task whose prompt is: "Read and follow <working fo
 3. **Sort into three groups.**
    - `needs_you`: someone is waiting on a reply, a decision or a deliverable; deadlines; meeting
      conflicts; requests from colleagues. Also personal messages from people (kindness matters,
-     these feed the person's social goals). Most important first. Each gets a one-line `action`.
+     these feed the person's social goals). Most important first. Each gets a one-line `action`
+     written as a to-do that starts with a verb and names the person or topic ("Reply to Sam about
+     the Q3 budget"); the page's "+ Planner" buttons copy it into the Kikker daily planner as is.
    - `today`: calendar events in time order, with `flag` for conflicts or problems.
    - `fyi`: worth knowing, no action needed (threads they're copied on, updates, alerts worth a glance,
      things they're waiting on from others).

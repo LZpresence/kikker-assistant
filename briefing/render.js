@@ -20,12 +20,24 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const link = (url, text) => (url && /^https:\/\//.test(url) ? `<a href="${esc(url)}" target="_blank" rel="noopener">${text}</a>` : text);
 const src = (s) => (s ? `<span class="src">${esc(s)}</span>` : '');
 
+/* "+ Planner" links. On Android they open the Kikker Assistant app (intent:// with the browser
+   version as fallback); elsewhere they open the browser version with #add=[...]. The page script
+   below picks which href to use. Task text stays on the phone: it's in the fragment / intent. */
+const APP_URL = 'https://lzpresence.github.io/kikker-assistant/';
+const taskOf = (x) => String(x.action || x.title || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+function planLinks(tasks) {
+  const web = `${APP_URL}#add=${encodeURIComponent(JSON.stringify(tasks))}`;
+  const intent = `intent://add?${tasks.map((t) => `t=${encodeURIComponent(t)}`).join('&')}#Intent;scheme=kikkerassistant;package=com.lzpresence.kikkerassistant;S.browser_fallback_url=${encodeURIComponent(web)};end`;
+  return `href="${esc(web)}" data-web="${esc(web)}" data-intent="${esc(intent)}" target="_blank" rel="noopener"`;
+}
+const planTasks = (b.needs_you || []).map(taskOf).filter(Boolean);
+
 const needs = (b.needs_you || []).map((x) => `
   <li class="item">
     <div class="top">${src(x.source)}${x.from ? `<span class="from">${esc(x.from)}</span>` : ''}${x.when ? `<span class="when">${esc(x.when)}</span>` : ''}</div>
     <b>${link(x.link, esc(x.title))}</b>
     ${x.why ? `<p>${esc(x.why)}</p>` : ''}
-    ${x.action ? `<p class="act">→ ${esc(x.action)}</p>` : ''}
+    <div class="actrow">${x.action ? `<p class="act">→ ${esc(x.action)}</p>` : '<span></span>'}${taskOf(x) ? `<a class="plan" ${planLinks([taskOf(x)])}>+ Planner</a>` : ''}</div>
   </li>`).join('');
 
 const today = (b.today || []).map((x) => `
@@ -96,10 +108,15 @@ a:hover{text-decoration-color:var(--accent)}
 .foot{font-size:12px;color:var(--dim);margin-top:24px}
 .foot ul{gap:2px;list-style:disc;padding-left:18px}
 .empty{color:var(--dim);font-size:14px}
+.actrow{display:flex;justify-content:space-between;align-items:flex-end;gap:10px;margin-top:4px}
+.actrow .act{margin:0}
+a.plan{flex:none;font-size:13px;font-weight:700;color:var(--accent);background:var(--accent-soft);border:1px solid var(--accent);border-radius:999px;padding:5px 11px;text-decoration:none;white-space:nowrap}
+a.plan.all{display:inline-block;margin:0 0 10px;padding:8px 14px;font-size:14px}
 </style>
 <header><div class="wrap">${kikker}<div class="head"><div class="date">${esc(b.date_label)}</div><h1>${esc(b.headline)}</h1>${b.kikker_note ? `<p>${esc(b.kikker_note)}</p>` : ''}</div></div></header>
 <main class="wrap">
   <h2>Needs you <small>${busy} item${busy === 1 ? '' : 's'}</small></h2>
+  ${planTasks.length > 1 ? `<a class="plan all" ${planLinks(planTasks)}>+ Add all ${planTasks.length} to today’s planner</a>` : ''}
   ${needs ? `<ul class="needs">${needs}</ul>` : '<p class="empty">Nothing waiting on you. Nice.</p>'}
   <h2>${esc(b.today_label || 'Today')}</h2>
   ${today ? `<ul class="today">${today}</ul>` : '<p class="empty">No meetings on the calendar.</p>'}
@@ -110,6 +127,10 @@ a:hover{text-decoration-color:var(--accent)}
     ${notes ? `<ul>${notes}</ul>` : ''}
   </div>
 </main>
+<script>
+/* Android: hand "+ Planner" taps to the Kikker Assistant app; elsewhere use the web app. */
+if (/Android/i.test(navigator.userAgent)) document.querySelectorAll('a.plan').forEach(function (a) { a.href = a.dataset.intent; });
+</script>
 `;
 fs.writeFileSync(outFile, html);
 console.log(`wrote ${outFile} (${html.length} bytes)`);

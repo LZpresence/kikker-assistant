@@ -38,6 +38,11 @@ class MainActivity : Activity() {
         web.addJavascriptInterface(Bridge(), "KikkerApp")
 
         web.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView, url: String) {
+                pageReady = true
+                deliverTasks()
+            }
+
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 if (request.url.host == HOST) return false
                 try { startActivity(Intent(Intent.ACTION_VIEW, request.url)) } catch (e: Exception) { /* no browser */ }
@@ -56,12 +61,36 @@ class MainActivity : Activity() {
             }
         }
 
+        takeTasks(intent)
         if (savedInstanceState != null) web.restoreState(savedInstanceState) else web.loadUrl(URL)
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFY)
         }
+    }
+
+    /* Briefing hand-off: kikkerassistant://add?t=...&t=... puts those tasks in today's plan. */
+    private var pageReady = false
+    private var pendingTasks: List<String> = emptyList()
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        takeTasks(intent)
+        deliverTasks()
+    }
+
+    private fun takeTasks(i: Intent?) {
+        val data = i?.data ?: return
+        if (data.scheme != "kikkerassistant" || data.host != "add") return
+        pendingTasks = data.getQueryParameters("t").map { it.trim().take(200) }.filter { it.isNotEmpty() }.take(20)
+    }
+
+    private fun deliverTasks() {
+        if (!pageReady || pendingTasks.isEmpty()) return
+        val js = "window.kikkerAddTasks && window.kikkerAddTasks(${org.json.JSONArray(pendingTasks)})"
+        pendingTasks = emptyList()
+        web.evaluateJavascript(js, null)
     }
 
     /** What the web app can call as window.KikkerApp. */

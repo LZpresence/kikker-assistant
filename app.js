@@ -24,7 +24,7 @@ function defaults() {
     weekday: { wakeEarliest: '05:00', wakeStart: '06:00', wakeEnd: '06:30', homeAt: '17:00', kidStart: '19:00', kidEnd: '20:00', projectAt: '20:05', windDown: '21:45', bed: '22:00', bedLatest: '22:30' },
     weekend: { wakeEarliest: '05:30', wakeStart: '07:00', wakeEnd: '08:00', homeAt: '10:00', kidStart: '19:00', kidEnd: '20:00', projectAt: '14:00', windDown: '22:15', bed: '22:30', bedLatest: '23:00' },
     lists: {
-      morning: [item('Glass of water and a stretch'), item('Plan the top 3 for today')],
+      morning: [item('Glass of water and a stretch')],
       home: [item('Check in with my daughter about her day'), item('Dinner'), item('Kitchen cleaned up'), item('Lunch and backpack ready for tomorrow')],
       weekendHome: [item('Tidy the kitchen'), item('Laundry'), item('Plan something fun with my daughter')],
       kid: [item('Bath and pajamas'), item('Brush teeth'), item('Story time'), item('Lights out by 8')],
@@ -55,6 +55,11 @@ const BRIEFING_DEFAULT = 'https://claude.ai/artifact/Hxr4SUGNBZVTyitSkArRPD';
 function upgrade(s) {
   if (s.briefingUrl === undefined) s.briefingUrl = BRIEFING_DEFAULT;
   if (!s.briefingAt) s.briefingAt = '08:15';
+  // Daily planner: the old "Plan the top 3" checklist item became the Plan tab.
+  if (!s.plans) {
+    s.plans = {};
+    if (s.lists && s.lists.morning) s.lists.morning = s.lists.morning.filter((i) => !/^plan the top 3/i.test(i.text));
+  }
   return s;
 }
 function load() {
@@ -78,6 +83,31 @@ const fmt = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit'
 const dayLog = (d) => { const k = ymd(d); return S.log[k] || (S.log[k] = { checks: {}, manual: {} }); };
 const peekLog = (d) => S.log[ymd(d)] || { checks: {}, manual: {} };
 const mondayOf = (d) => { const x = startOfDay(d); const off = (x.getDay() + 6) % 7; return addDays(x, -off); };
+
+/* ---------- daily planner ---------- */
+const TOP = 3;
+const peekPlan = (d) => S.plans[ymd(d)] || [];
+const planOf = (d) => { const k = ymd(d); return S.plans[k] || (S.plans[k] = []); };
+/** Adds tasks to a day's plan, skipping ones already there. The first ones fill the top 3. */
+function addTasks(texts, date, extra) {
+  const plan = planOf(date);
+  let n = 0;
+  for (const raw of texts) {
+    const text = String(raw || '').trim().slice(0, 200);
+    if (!text || plan.some((t) => t.text.toLowerCase() === text.toLowerCase())) continue;
+    plan.push({ id: uid(), text, done: false, top: plan.filter((t) => t.top && !t.done).length < TOP, ...(extra || {}) });
+    n++;
+  }
+  return n;
+}
+/** Unfinished tasks from the most recent earlier day (looks back a week). */
+function leftovers(date) {
+  for (let i = 1; i <= 7; i++) {
+    const d = addDays(date, -i), left = peekPlan(d).filter((t) => !t.done && !t.moved);
+    if (left.length) return { date: d, tasks: left };
+  }
+  return null;
+}
 
 /* ---------- weather (Open-Meteo, cached for an hour) ---------- */
 async function loadWeather(force) {
@@ -164,7 +194,7 @@ function blocks(date) {
 
 function listDone(list, log) { const items = S.lists[list] || []; return items.length > 0 && items.every((i) => log.checks[i.id]); }
 function blockDone(b, log) {
-  if (b.id === 'morning') return !!log.exercise && listDone('morning', log);
+  if (b.id === 'morning') return !!log.exercise && listDone('morning', log) && peekPlan(b.start).length > 0;
   if (b.id === 'project') return !!(log.project && log.project.minutes);
   if (b.id === 'night') return listDone('night', log) && log.mood != null;
   return listDone(b.list, log);
@@ -172,7 +202,7 @@ function blockDone(b, log) {
 function blockCount(b, log) {
   const items = b.list ? S.lists[b.list] : [];
   let total = items.length, done = items.filter((i) => log.checks[i.id]).length;
-  if (b.id === 'morning') { total++; if (log.exercise) done++; }
+  if (b.id === 'morning') { total += 2; if (log.exercise) done++; if (peekPlan(b.start).length) done++; }
   if (b.id === 'project') { total = 1; done = log.project && log.project.minutes ? 1 : 0; }
   if (b.id === 'night') { total++; if (log.mood != null) done++; }
   return { done, total };
@@ -195,7 +225,7 @@ function goalHit(g, date) {
   if (g.source === 'bed') return log.bedOnTime === true;
   if (g.source === 'home') return listDone(isWeekend(date) ? 'weekendHome' : 'home', log) && listDone('kid', log);
   if (g.source.startsWith('item:')) return !!log.checks[g.source.slice(5)];
-  return !!log.manual[g.id];
+  return !!log.manual[g.id] || peekPlan(date).some((t) => t.goal === g.id && t.done);
 }
 function weekCount(g, date) {
   const mon = mondayOf(date);
@@ -285,6 +315,7 @@ function render() {
   $('kikker').innerHTML = kikkerNow(now, bl, log);
 
   if (tab === 'today') renderToday(now, today, bl, log);
+  if (tab === 'plan') renderPlan(now);
   if (tab === 'goals') renderGoals(now);
   if (tab === 'projects') renderProjects(now);
   if (tab === 'settings') renderSettings();
@@ -302,6 +333,7 @@ function renderToday(now, today, bl, log) {
     html.push(`<a class="brief" href="${esc(S.briefingUrl)}" target="_blank" rel="noopener">
       <span class="bicon" aria-hidden="true">☀</span><span><b>Morning briefing</b><small>${ready ? 'Email, calendar, Teams and Slack, sorted. Tap to open.' : `Ready around ${fmt(at(today, S.briefingAt))}.`}</small></span><span class="arrow" aria-hidden="true">›</span></a>`);
   }
+  html.push(planCard(today));
   if (!S.loc) {
     html.push(`<div class="card"><b>Let Kikker check the sunrise</b><p class="note" style="margin:0">Your location is used only for the morning weather, and stays on this phone.</p><div class="row"><button class="btn primary" data-act="gps">Use my location</button><button class="btn" data-act="tab" data-tab="settings">Search a town</button></div></div>`);
   }
@@ -329,7 +361,8 @@ function blockBody(b, log, today) {
     const pl = b.plan;
     return `<div class="plan"><b>${esc(ACT[pl.act])}, up at ${fmt(pl.wake)}</b><p>${esc(pl.why)}</p></div>
       <div><div class="note" style="margin-bottom:6px">What did you do?</div><div class="choices">${['bike', 'karate', 'workout', 'rest'].map((a) => `<button class="choice${log.exercise === a ? ' on' : ''}" data-act="exercise" data-v="${a}">${ACT[a]}</button>`).join('')}</div></div>
-      ${checklist('morning', log)}`;
+      ${checklist('morning', log)}
+      <button class="btn${peekPlan(today).length ? '' : ' primary'}" data-act="tab" data-tab="plan">${peekPlan(today).length ? 'Open today’s plan' : 'Plan your top 3'}</button>`;
   }
   if (b.id === 'project') return projectBody(log, today);
   if (b.id === 'night') return nightBody(log, today);
@@ -374,6 +407,58 @@ function nightBody(log, today) {
 
 const ago = (t) => { const d = Math.round((Date.now() - t) / 864e5); return d <= 0 ? 'today' : d === 1 ? 'yesterday' : `${d} days ago`; };
 const timerText = (start) => { const left = Math.max(0, start + 60 * MIN - Date.now()); return left ? `${Math.floor(left / MIN)}:${pad(Math.floor(left % MIN / 1000))}` : "Hour's up!"; };
+
+/* ---------- planner views ---------- */
+let planOff = 0; // 0 = today, 1 = tomorrow, -1 = yesterday
+const dayName = (off, d) => (off === 0 ? 'Today' : off === 1 ? 'Tomorrow' : off === -1 ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'long' }));
+
+function taskRow(t, off) {
+  const goal = t.goal && S.goals.find((g) => g.id === t.goal);
+  return `<li class="task${t.done ? ' done' : ''}"><label><input type="checkbox" data-act="ptask" data-off="${off}" data-id="${t.id}"${t.done ? ' checked' : ''}><span>${esc(t.text)}${goal ? `<small>Goal: ${esc(goal.name)}</small>` : t.src ? `<small>From ${esc(t.src)}</small>` : ''}</span></label>
+    <button class="star${t.top ? ' on' : ''}" data-act="ptop" data-off="${off}" data-id="${t.id}" aria-label="${t.top ? 'Remove from top 3' : 'Make it a top 3'}">★</button>
+    <button class="x" data-act="pdel" data-off="${off}" data-id="${t.id}" aria-label="Remove task">✕</button></li>`;
+}
+
+/** Compact card on the Today view: the top 3 and a way into the planner. */
+function planCard(today) {
+  const plan = peekPlan(today);
+  if (!plan.length) {
+    const left = leftovers(today);
+    return `<div class="card plancard"><b>Today’s plan</b><p class="note" style="margin:0">Nothing planned yet. Pick your top 3${left ? `, or bring over ${left.tasks.length} unfinished from ${left.date.toLocaleDateString([], { weekday: 'long' })}` : ''}.</p>
+      <div class="row"><button class="btn primary" data-act="tab" data-tab="plan">Plan my day</button>${left ? `<button class="btn" data-act="pcarry" data-off="0">Bring them over</button>` : ''}</div></div>`;
+  }
+  const top = plan.filter((t) => t.top), rest = plan.length - top.length, done = plan.filter((t) => t.done).length;
+  return `<div class="card plancard"><div class="row" style="justify-content:space-between"><b>Today’s plan</b><span class="pill${done === plan.length ? ' done' : ''}">${done}/${plan.length}</span></div>
+    <ul class="tasks">${(top.length ? top : plan.slice(0, TOP)).map((t) => taskRow(t, 0)).join('')}</ul>
+    <button class="btn ghost" data-act="tab" data-tab="plan">${rest > 0 && top.length ? `${rest} more · ` : ''}Open planner</button></div>`;
+}
+
+function renderPlan(now) {
+  const d = addDays(startOfDay(now), planOff), plan = peekPlan(d);
+  const top = plan.filter((t) => t.top), rest = plan.filter((t) => !t.top);
+  const left = planOff >= 0 ? leftovers(d) : null;
+  const goals = S.goals.filter((g) => !plan.some((t) => t.goal === g.id));
+  const pr = suggestedProject(d), st = pr && nextStep(pr);
+  const chips = [
+    ...goals.map((g) => `<button class="choice" data-act="pgoal" data-id="${g.id}">+ ${esc(g.name)}</button>`),
+    st && !plan.some((t) => t.text === `${pr.name}: ${st.text}`) ? `<button class="choice" data-act="pstep">+ ${esc(pr.name)}: ${esc(st.text)}</button>` : '',
+  ].join('');
+  $('view-plan').innerHTML = `
+    <div class="daynav"><button class="btn ghost" data-act="pday" data-v="-1"${planOff <= -1 ? ' disabled' : ''} aria-label="Previous day">‹</button>
+      <h2 style="margin:0">${dayName(planOff, d)} <small>${d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}</small></h2>
+      <button class="btn ghost" data-act="pday" data-v="1"${planOff >= 6 ? ' disabled' : ''} aria-label="Next day">›</button></div>
+    <form class="row" id="taskForm"><input id="taskTxt" type="text" placeholder="Add a task or goal for ${dayName(planOff, d).toLowerCase()}" autocomplete="off" style="flex:1;min-width:0;padding:11px 12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--fg)"><button class="btn primary">Add</button></form>
+    ${left && !plan.some((t) => left.tasks.some((l) => l.text === t.text)) ? `<div class="card"><b>${left.tasks.length} unfinished from ${left.date.toLocaleDateString([], { weekday: 'long' })}</b><p class="note" style="margin:0">${left.tasks.slice(0, 3).map((t) => esc(t.text)).join(' · ')}${left.tasks.length > 3 ? ' …' : ''}</p><div class="row"><button class="btn" data-act="pcarry" data-off="${planOff}">Bring them over</button></div></div>` : ''}
+    <h2>Top 3 <small>${top.length > TOP ? `${top.length} starred, keep it to 3` : 'tap ★ to choose'}</small></h2>
+    ${top.length ? `<ul class="tasks card">${top.map((t) => taskRow(t, planOff)).join('')}</ul>` : '<p class="note">Star up to three things that would make the day a win.</p>'}
+    <h2>Also on the list</h2>
+    ${rest.length ? `<ul class="tasks card">${rest.map((t) => taskRow(t, planOff)).join('')}</ul>` : '<p class="note">Nothing else yet.</p>'}
+    ${chips ? `<h2>Quick add <small>from your goals and projects</small></h2><div class="choices">${chips}</div>` : ''}
+    <details class="card"><summary class="note">Add several at once</summary>
+      <label class="field" style="margin-top:8px">One per line<textarea id="taskMany" placeholder="Call the dentist&#10;Order guitar strings"></textarea></label>
+      <button class="btn" data-act="pmany">Add them</button></details>
+    <p class="note">Your morning briefing has “+ Planner” buttons that drop its to-dos straight in here.</p>`;
+}
 
 function renderGoals(now) {
   const mon = mondayOf(now), groups = {};
@@ -492,7 +577,32 @@ document.addEventListener('click', async (e) => {
     case 'exercise': log.exercise = log.exercise === t.dataset.v ? null : t.dataset.v; save(); render(); break;
     case 'mood': log.mood = +t.dataset.v; save(); render(); break;
     case 'bed': log.bedOnTime = t.dataset.v === 'yes'; save(); render(); break;
-    case 'saveNight': log.wins = $('wins').value.trim(); log.tomorrow = $('tmrw').value.trim(); save(); toast('Check-out saved. Sleep well!'); render(); break;
+    case 'saveNight': {
+      log.wins = $('wins').value.trim(); log.tomorrow = $('tmrw').value.trim();
+      const added = log.tomorrow ? addTasks([log.tomorrow], addDays(today, 1), { top: true }) : 0;
+      save(); toast(added ? 'Saved, and added to tomorrow’s plan. Sleep well!' : 'Check-out saved. Sleep well!'); render(); break;
+    }
+    case 'pday': planOff = Math.max(-1, Math.min(6, planOff + Number(t.dataset.v))); render(); break;
+    case 'ptop': case 'pdel': {
+      const d = addDays(today, Number(t.dataset.off)), plan = planOf(d), task = plan.find((x) => x.id === t.dataset.id);
+      if (!task) break;
+      if (act === 'pdel') S.plans[ymd(d)] = plan.filter((x) => x !== task);
+      else task.top = !task.top;
+      save(true); render(); break;
+    }
+    case 'pcarry': {
+      const d = addDays(today, Number(t.dataset.off)), left = leftovers(d);
+      if (!left) break;
+      const n = left.tasks.reduce((s, x) => s + addTasks([x.text], d, x.goal ? { carried: true, goal: x.goal } : { carried: true }), 0);
+      left.tasks.forEach((x) => { x.moved = true; });
+      save(true); toast(`Brought over ${n} task${n === 1 ? '' : 's'}`); render(); break;
+    }
+    case 'pgoal': { const g = S.goals.find((x) => x.id === t.dataset.id); if (g) { addTasks([g.name], addDays(today, planOff), { goal: g.id }); save(true); render(); } break; }
+    case 'pstep': { const d = addDays(today, planOff), pr = suggestedProject(d), st = pr && nextStep(pr); if (st) { addTasks([`${pr.name}: ${st.text}`], d); save(true); render(); } break; }
+    case 'pmany': {
+      const n = addTasks($('taskMany').value.split('\n'), addDays(today, planOff));
+      save(true); toast(n ? `Added ${n}` : 'Nothing new to add'); render(); break;
+    }
     case 'alarm': { const [hh, mm] = t.dataset.t.split(':').map(Number); try { app().setAlarm(hh, mm, 'Kikker: good morning'); } catch { toast('Could not open the clock app'); } break; }
     case 'startTimer': log.timerStart = Date.now(); save(); render(); break;
     case 'stopTimer': render(); { const d = document.querySelector('details'); if (d) d.open = true; } break;
@@ -561,6 +671,11 @@ document.addEventListener('click', async (e) => {
 document.addEventListener('change', (e) => {
   const t = e.target, today = startOfDay(new Date()), log = dayLog(today);
   if (t.dataset.act === 'check') { log.checks[t.dataset.id] = t.checked; if (!t.checked) delete log.checks[t.dataset.id]; save(); render(); return; }
+  if (t.dataset.act === 'ptask') {
+    const task = planOf(addDays(today, Number(t.dataset.off))).find((x) => x.id === t.dataset.id);
+    if (task) { task.done = t.checked; save(true); render(); }
+    return;
+  }
   if (t.dataset.act === 'pick') { log.projectPick = t.value; save(); render(); return; }
   if (t.dataset.set) { const [k, f] = t.dataset.set.split('.'); if (t.value) { S[k][f] = t.value; save(); render(); toast('Saved'); } return; }
   if (t.dataset.list) {
@@ -580,6 +695,12 @@ document.addEventListener('change', (e) => {
 });
 
 document.addEventListener('submit', async (e) => {
+  if (e.target.id === 'taskForm') {
+    e.preventDefault();
+    const v = $('taskTxt').value;
+    if (addTasks([v], addDays(startOfDay(new Date()), planOff))) { save(true); render(); const i = $('taskTxt'); if (i) i.focus(); }
+    return;
+  }
   if (e.target.id !== 'locForm') return;
   e.preventDefault();
   const q = $('locQ').value.trim();
@@ -604,7 +725,9 @@ function useGps() {
 
 function setTab(name) {
   tab = name;
-  for (const v of ['today', 'goals', 'projects', 'settings']) $(`view-${v}`).hidden = v !== name;
+  if (name === 'plan' && tab !== 'plan') planOff = 0;
+  tab = name;
+  for (const v of ['today', 'plan', 'goals', 'projects', 'settings']) $(`view-${v}`).hidden = v !== name;
   document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === name));
   window.scrollTo(0, 0);
   render();
@@ -625,8 +748,27 @@ document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible') { await loadWeather(); render(); scheduleReminders(); }
 });
 
+/* Briefing hand-off: "+ Planner" links open this page with #add=["task", ...] (the browser
+   version), or the Android app calls window.kikkerAddTasks([...]). Either way the tasks land in
+   today's plan. The hash never leaves the phone (it isn't sent to the server). */
+window.kikkerAddTasks = function (list) {
+  const n = addTasks(Array.isArray(list) ? list : [], startOfDay(new Date()), { src: 'briefing' });
+  save(true);
+  setTab('plan');
+  toast(n ? `Added ${n} from your briefing` : 'Already in today’s plan');
+  return n;
+};
+function importFromHash() {
+  const m = location.hash.match(/^#add=(.+)$/);
+  if (!m) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  try { window.kikkerAddTasks(JSON.parse(decodeURIComponent(m[1]))); } catch { toast('Couldn’t read those tasks'); }
+}
+window.addEventListener('hashchange', importFromHash);
+
 (async function start() {
   render();
+  importFromHash();
   await loadWeather();
   render();
   scheduleReminders();
