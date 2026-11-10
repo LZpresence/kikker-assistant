@@ -80,17 +80,66 @@ class MainActivity : Activity() {
         deliverTasks()
     }
 
+    private var gotEmptyLink = false
+
+    /** Reads tasks from kikkerassistant://add/<base64 JSON>?t=...&t=... — whichever part survived the
+     *  app that opened the link (some apps drop the query or the path). */
     private fun takeTasks(i: Intent?) {
         val data = i?.data ?: return
         if (data.scheme != "kikkerassistant" || data.host != "add") return
-        pendingTasks = data.getQueryParameters("t").map { it.trim().take(200) }.filter { it.isNotEmpty() }.take(20)
+        val found = mutableListOf<String>()
+        try { found += data.getQueryParameters("t") } catch (e: Exception) { /* opaque or odd uri */ }
+        if (found.isEmpty()) {
+            val seg = data.pathSegments.firstOrNull() ?: data.fragment
+            if (!seg.isNullOrBlank()) found += decodeList(seg)
+        }
+        val list = found.map { it.trim().take(200) }.filter { it.isNotEmpty() }.distinct().take(20)
+        if (list.isEmpty()) gotEmptyLink = true else pendingTasks = list
+        i?.setData(null) // handle each link once, even if the activity is recreated
     }
 
-    private fun deliverTasks() {
-        if (!pageReady || pendingTasks.isEmpty()) return
-        val js = "window.kikkerAddTasks && window.kikkerAddTasks(${org.json.JSONArray(pendingTasks)})"
-        pendingTasks = emptyList()
-        web.evaluateJavascript(js, null)
+    private fun decodeList(seg: String): List<String> = try {
+        val json = String(android.util.Base64.decode(seg, android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING), Charsets.UTF_8)
+        val arr = org.json.JSONArray(json)
+        (0 until arr.length()).map { arr.optString(it) }
+    } catch (e: Exception) { emptyList() }
+
+    /** Tasks copied by the briefing's "Send to Kikker" button (clipboard text starting with this tag). */
+    private fun takeClipboard() {
+        val cm = getSystemService(android.content.ClipboardManager::class.java) ?: return
+        val text = try { cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString() } catch (e: Exception) { null } ?: return
+        if (!text.startsWith(CLIP_TAG)) return
+        val list = text.removePrefix(CLIP_TAG).lines().map { it.trim().take(200) }.filter { it.isNotEmpty() }.distinct().take(20)
+        if (list.isNotEmpty()) pendingTasks = (pendingTasks + list).distinct()
+        try { if (Build.VERSION.SDK_INT >= 28) cm.clearPrimaryClip() else cm.setPrimaryClip(android.content.ClipData.newPlainText("", "")) } catch (e: Exception) { /* ignore */ }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // Android only lets the focused app read the clipboard, so check once we have focus.
+        if (hasFocus) { takeClipboard(); deliverTasks() }
+    }
+
+    /** Hands pending tasks to the web app, retrying until its page has loaded. */
+    private fun deliverTasks(attempt: Int = 0) {
+        if (pendingTasks.isEmpty()) {
+            if (gotEmptyLink && pageReady) {
+                gotEmptyLink = false
+                Toast.makeText(this, "Kikker opened, but no tasks came with the link. Use Copy list on the briefing.", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+        if (!pageReady) return
+        val list = pendingTasks
+        web.evaluateJavascript("typeof window.kikkerAddTasks === 'function' ? window.kikkerAddTasks(${org.json.JSONArray(list)}) : -1") { result ->
+            if (result == "-1" || result == "null") {
+                if (attempt < 20) web.postDelayed({ deliverTasks(attempt + 1) }, 500)
+                else Toast.makeText(this, "Couldn't add the tasks yet. Try Send again.", Toast.LENGTH_LONG).show()
+            } else {
+                pendingTasks = pendingTasks - list.toSet()
+                gotEmptyLink = false
+            }
+        }
     }
 
     /** What the web app can call as window.KikkerApp. */
@@ -140,6 +189,7 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        private const val CLIP_TAG = "kikker-tasks:\n"
         private const val HOST = "lzpresence.github.io"
         private const val URL = "https://lzpresence.github.io/kikker-assistant/"
         private const val REQ_LOCATION = 1

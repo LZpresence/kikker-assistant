@@ -139,7 +139,11 @@ a:hover{text-decoration-color:var(--accent)}
   var ANDROID = /Android/i.test(navigator.userAgent);
   var box = document.getElementById('inbox');
   var ref = null, tasks = [], sent = [], ready = false;
-  function appLink(list) { return 'kikkerassistant://add?' + list.map(function (t) { return 't=' + encodeURIComponent(t); }).join('&'); }
+  // The tasks ride in the path (base64 JSON) and the query, since some apps drop one of them.
+  function b64(s) { return btoa(unescape(encodeURIComponent(s))).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, ''); }
+  function appLink(list) { return 'kikkerassistant://add/' + b64(JSON.stringify(list)) + '?' + list.map(function (t) { return 't=' + encodeURIComponent(t); }).join('&'); }
+  // ...and on the clipboard, which the Kikker app checks when it opens.
+  function clip(list) { try { if (navigator.clipboard) navigator.clipboard.writeText('kikker-tasks:\\n' + list.join('\\n')).catch(function () {}); } catch (e) { /* not allowed here */ } }
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function has(t) { return tasks.some(function (x) { return x.text === t; }); }
   function marks() {
@@ -162,7 +166,7 @@ a:hover{text-decoration-color:var(--accent)}
         txt.append(el('small', null, 'Tap send and they land in today’s plan.'));
         var go = el('a', 'go', 'Send to Kikker');
         go.href = appLink(list); go.target = '_blank'; go.rel = 'noopener';
-        go.addEventListener('click', function () { setTimeout(function () { save([], list); }, 400); });
+        go.addEventListener('click', function () { clip(list); setTimeout(function () { save([], list); }, 400); });
         acts.append(go);
       } else {
         txt.append(el('small', null, 'Open this briefing on your phone and tap “Send to Kikker”.'));
@@ -197,7 +201,7 @@ a:hover{text-decoration-color:var(--accent)}
     if (!b) return;
     var list = JSON.parse(b.dataset.task);
     if (!ref) { // no inbox here: hand straight to the app on a phone
-      if (ANDROID) { window.open(appLink(list), '_blank'); } else { b.textContent = 'Open on your phone to add'; }
+      if (ANDROID) { clip(list); window.open(appLink(list), '_blank'); } else { b.textContent = 'Open on your phone to add'; }
       return;
     }
     var add = list.filter(function (t) { return !has(t); }).map(function (t) { return { text: t, at: Date.now() }; });
