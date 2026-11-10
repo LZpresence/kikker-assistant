@@ -63,7 +63,9 @@ link), and create a scheduled task whose prompt is: "Read and follow <working fo
    }
    ```
 5. **Render:** `node "<working folder>\render.js" "<output folder>\briefing.json" "<output folder>\briefing.html"`
-6. **Publish:** Artifact tool, `action: publish`, `file_path` = the rendered HTML, `url` = the
+6. **Publish:** Artifact tool, `action: publish`, `file_path` = the rendered HTML, never pass
+   `capabilities` (omitting it keeps the page's planner inbox storage; on a brand-new page pass
+   `capabilities: {"db": {}, "user": {}}` once), `url` = the
    Briefing page URL from settings.local.md (read it first with `action: read` if the publish asks for it). Never
    create a second artifact when the URL is set. If the URL is blank, publish without `url`
    (icon `sun`) and report the new URL so it can be saved in the table.

@@ -78,6 +78,9 @@ const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); retur
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
 const prof = (d) => (isWeekend(d) ? S.weekend : S.weekday);
+/* Evenings follow the next morning: Friday night is a weekend night, Sunday night is a school night. */
+const nightProf = (d) => (d.getDay() === 5 ? S.weekend : d.getDay() === 0 ? S.weekday : prof(d));
+const dayKind = (d) => (d.getDay() === 5 ? 'weekend night' : d.getDay() === 0 ? 'weekend · school night' : isWeekend(d) ? 'weekend' : '');
 const at = (d, hhmm) => { const [h, m] = hhmm.split(':').map(Number); const x = new Date(d); x.setHours(h, m, 0, 0); return x; };
 const fmt = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 const dayLog = (d) => { const k = ymd(d); return S.log[k] || (S.log[k] = { checks: {}, manual: {} }); };
@@ -182,13 +185,13 @@ function morningPlan(date) {
 
 /* ---------- parts of the day ---------- */
 function blocks(date) {
-  const p = prof(date), we = isWeekend(date), plan = morningPlan(date);
+  const p = prof(date), n = nightProf(date), we = isWeekend(date), plan = morningPlan(date);
   return [
     { id: 'morning', name: 'Morning', start: plan.wake, end: at(date, we ? '10:00' : '08:00'), list: 'morning', plan },
-    { id: 'home', name: we ? 'Around the house' : 'After work', start: at(date, p.homeAt), end: at(date, we ? '12:00' : p.kidStart), list: we ? 'weekendHome' : 'home' },
+    { id: 'home', name: we ? 'Around the house' : 'After work', start: at(date, p.homeAt), end: at(date, we ? '12:00' : n.kidStart), list: we ? 'weekendHome' : 'home' },
     { id: 'project', name: 'Project hour', start: at(date, p.projectAt), end: new Date(at(date, p.projectAt).getTime() + 60 * MIN) },
-    { id: 'kid', name: 'Bedtime routine', start: at(date, p.kidStart), end: at(date, p.kidEnd), list: 'kid' },
-    { id: 'night', name: 'Wind down', start: at(date, p.windDown), end: at(date, p.bedLatest), list: 'night' },
+    { id: 'kid', name: 'Bedtime routine', start: at(date, n.kidStart), end: at(date, n.kidEnd), list: 'kid' },
+    { id: 'night', name: 'Wind down', start: at(date, n.windDown), end: at(date, n.bedLatest), list: 'night' },
   ].sort((a, b) => a.start - b.start);
 }
 
@@ -248,20 +251,20 @@ function sendReminders() {
     const now = Date.now(), today = startOfDay(new Date());
     const add = (id, when, title, body, url) => { if (when.getTime() > now + 30e3) list.push({ id, at: when.getTime(), title, body, url: url || '' }); };
     for (let i = 0; i < 7; i++) {
-      const d = addDays(today, i), p = prof(d), log = peekLog(d), we = isWeekend(d);
+      const d = addDays(today, i), p = prof(d), n = nightProf(d), log = peekLog(d), we = isWeekend(d);
       if (!we && S.briefingUrl) add(i * 10 + 7, at(d, S.briefingAt), 'Your morning briefing is ready', 'Email, calendar, Teams and Slack, sorted by Kikker. Tap to open.', S.briefingUrl);
       const plan = morningPlan(d);
       add(i * 10 + 1, plan.wake, plan.act === 'bike' ? 'Good morning! Bike time' : 'Good morning', plan.why);
       if (!listDone(we ? 'weekendHome' : 'home', log)) {
         add(i * 10 + 2, at(d, p.homeAt), we ? 'Around the house' : 'Home stretch', (S.lists[we ? 'weekendHome' : 'home'] || []).map((x) => x.text).slice(0, 3).join(' · '));
       }
-      add(i * 10 + 3, new Date(at(d, p.kidStart).getTime() - 15 * MIN), 'Bedtime routine in 15 minutes', `Starts at ${fmt(at(d, p.kidStart))}.`);
+      add(i * 10 + 3, new Date(at(d, n.kidStart).getTime() - 15 * MIN), 'Bedtime routine in 15 minutes', `Starts at ${fmt(at(d, n.kidStart))}.`);
       if (!(log.project && log.project.minutes)) {
         const pr = suggestedProject(d), st = pr && nextStep(pr);
         add(i * 10 + 4, at(d, p.projectAt), 'Project hour', pr ? `${pr.name}${st ? `: ${st.text}` : ''}` : 'Pick a project for the next hour.');
       }
-      add(i * 10 + 5, at(d, p.windDown), 'Time to wind down', `Lights out by ${fmt(at(d, p.bedLatest))}. Do your quick check-out with Kikker.`);
-      add(i * 10 + 6, at(d, p.bed), 'Bedtime', `Aim to be asleep by ${fmt(at(d, p.bedLatest))}.`);
+      add(i * 10 + 5, at(d, n.windDown), 'Time to wind down', `Lights out by ${fmt(at(d, n.bedLatest))}. Do your quick check-out with Kikker.`);
+      add(i * 10 + 6, at(d, n.bed), 'Bedtime', `Aim to be asleep by ${fmt(at(d, n.bedLatest))}.`);
     }
     const tl = dayLog(new Date());
     if (tl.timerStart && !tl.project) add(900, new Date(tl.timerStart + 60 * MIN), "Hour's up!", 'Nice work. Log what you did so Kikker can track it.');
@@ -272,7 +275,7 @@ function sendReminders() {
 /* ---------- Kikker in the header ---------- */
 function kikkerNow(now, bl, log) {
   if (typeof kikkerSvg !== 'function') return '';
-  const p = prof(now);
+  const p = nightProf(now);
   const night = now >= at(now, p.windDown) || now < bl[0].start;
   const morning = bl.find((b) => b.id === 'morning');
   const inMorning = now >= morning.start && now < morning.end;
@@ -307,11 +310,11 @@ function render() {
   $('hello').textContent = `${h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'}${S.name ? `, ${S.name}` : ''}`;
   $('say').textContent = sayLine(now, bl, log);
   const nxt = bl.find((b) => b.start > now);
-  $('next').innerHTML = nxt ? `Next: <b>${esc(nxt.name)}</b> at ${fmt(nxt.start)}` : `Bedtime target: <b>${fmt(at(now, prof(now).bed))}–${fmt(at(now, prof(now).bedLatest))}</b>`;
+  $('next').innerHTML = nxt ? `Next: <b>${esc(nxt.name)}</b> at ${fmt(nxt.start)}` : `Bedtime target: <b>${fmt(at(now, nightProf(now).bed))}–${fmt(at(now, nightProf(now).bedLatest))}</b>`;
   const c = bl.map((b) => blockCount(b, log)).reduce((a, x) => ({ done: a.done + x.done, total: a.total + x.total }), { done: 0, total: 0 });
   $('progBar').style.width = `${Math.round(c.done / Math.max(1, c.total) * 100)}%`;
   $('progTxt').textContent = `${c.done} of ${c.total} done today`;
-  $('dateTxt').textContent = now.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }) + (isWeekend(now) ? ' · weekend' : '');
+  $('dateTxt').textContent = now.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }) + (dayKind(now) ? ` · ${dayKind(now)}` : '');
   $('kikker').innerHTML = kikkerNow(now, bl, log);
 
   if (tab === 'today') renderToday(now, today, bl, log);
@@ -347,7 +350,7 @@ function renderToday(now, today, bl, log) {
       const pr = log.project ? S.projects.find((x) => x.id === log.project.id) : suggestedProject(today);
       sub = pr ? pr.name : 'Add a project';
     }
-    if (b.id === 'night') sub = `Bed ${fmt(at(today, prof(today).bed))}–${fmt(at(today, prof(today).bedLatest))}`;
+    if (b.id === 'night') sub = `Bed ${fmt(at(today, nightProf(today).bed))}–${fmt(at(today, nightProf(today).bedLatest))}`;
     if (b.id === 'kid') sub = `${fmt(b.start)}–${fmt(b.end)}`;
     html.push(`<article class="block${isNow ? ' now' : ''}"><button class="bhead" data-act="toggle" data-block="${b.id}" aria-expanded="${expanded}">
       <span class="when num">${fmt(b.start)}</span><span><h3>${esc(b.name)}</h3>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</span>${pill}</button>
@@ -393,7 +396,7 @@ function projectBody(log, today) {
 }
 
 function nightBody(log, today) {
-  const p = prof(today), tm = morningPlan(addDays(today, 1));
+  const p = nightProf(today), tm = morningPlan(addDays(today, 1));
   const faces = ['😞', '😕', '😐', '🙂', '😄'];
   return `${checklist('night', log)}
     <div><div class="note" style="margin-bottom:6px">How did today feel?</div><div class="moods">${faces.map((f, i) => `<button class="mood${log.mood === i + 1 ? ' on' : ''}" data-act="mood" data-v="${i + 1}" aria-label="Mood ${i + 1} of 5">${f}</button>`).join('')}</div></div>
@@ -544,8 +547,8 @@ function renderSettings() {
     <div class="card"><label class="field">Briefing page link<input id="sBrief" type="url" value="${esc(S.briefingUrl)}" placeholder="https://claude.ai/artifact/…"></label>
       <label class="field">Remind me at<input id="sBriefAt" type="time" value="${S.briefingAt}"></label>
       <p class="note" style="margin:0">A scheduled Claude routine refreshes this private page at 8:00 on weekdays. Using a different Claude account? Paste that account's briefing link here. Leave it blank to hide the briefing.</p></div>
-    <h2>Weekdays</h2><div class="card">${times('weekday')}</div>
-    <h2>Weekends</h2><div class="card">${times('weekend')}</div>
+    <h2>Weekdays <small>Sun–Thu nights use these bedtimes</small></h2><div class="card">${times('weekday')}</div>
+    <h2>Weekends <small>Fri and Sat nights use these bedtimes</small></h2><div class="card">${times('weekend')}</div>
     <h2>Checklists <small>one item per line</small></h2>
     <div class="card">${LISTS.map(([k, l]) => `<label class="field">${l}<textarea data-list="${k}">${esc((S.lists[k] || []).map((i) => i.text).join('\n'))}</textarea></label>`).join('')}</div>
     <h2>Reminders</h2><div class="card">
