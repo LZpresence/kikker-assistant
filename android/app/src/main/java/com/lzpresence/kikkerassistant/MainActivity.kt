@@ -15,10 +15,26 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.PermissionController
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
-/** Kikker Assistant: the web app full screen, plus native reminders and a hand-off to the Clock app. */
-class MainActivity : Activity() {
+/** Kikker Assistant: the web app full screen, plus native reminders, a hand-off to the Clock app,
+ *  and read-only sleep and activity from Health Connect. */
+class MainActivity : ComponentActivity() {
     private lateinit var web: WebView
+
+    /* Health Connect permission screen; the result goes back to the page as kikkerHealthPermission(n). */
+    private val healthAsk = registerForActivityResult(PermissionController.createRequestPermissionResultContract()) { granted ->
+        js("window.kikkerHealthPermission && window.kikkerHealthPermission(${granted.intersect(Health.PERMISSIONS).size}, ${Health.PERMISSIONS.size})")
+    }
+
+    private fun js(code: String) = runOnUiThread { web.evaluateJavascript(code, null) }
     private var geoCallback: GeolocationPermissions.Callback? = null
     private var geoOrigin: String? = null
 
@@ -164,12 +180,60 @@ class MainActivity : Activity() {
             }
         }
 
+        /** "ok", "needs_update" or "unavailable" (no Health Connect on this phone). */
+        @JavascriptInterface
+        fun healthStatus(): String = Health.sdkStatus(this@MainActivity)
+
+        /** Opens the Health Connect permission screen for Kikker's read permissions. */
+        @JavascriptInterface
+        fun healthConnect() {
+            runOnUiThread {
+                when (Health.sdkStatus(this@MainActivity)) {
+                    "ok" -> healthAsk.launch(Health.PERMISSIONS)
+                    "needs_update" -> openHealthConnectStore()
+                    else -> Toast.makeText(this@MainActivity, "Health Connect isn't available on this phone", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+
+        /** Opens Health Connect's own settings (data sources, permissions, what's stored). */
+        @JavascriptInterface
+        fun healthSettings() {
+            runOnUiThread {
+                try { startActivity(Intent(HealthConnectClient.ACTION_HEALTH_CONNECT_SETTINGS)) } catch (e: Exception) { openHealthConnectStore() }
+            }
+        }
+
+        /** Reads the last [days] days in the background and hands the JSON to window.kikkerHealthData(). */
+        @JavascriptInterface
+        fun healthFetch(days: Int) {
+            lifecycleScope.launch {
+                val json = withContext(Dispatchers.IO) {
+                    try {
+                        if (Health.sdkStatus(this@MainActivity) != "ok") JSONObject().put("ok", false).put("error", "Health Connect isn't available")
+                        else Health.fetch(this@MainActivity, days.coerceIn(1, 30))
+                    } catch (e: Exception) {
+                        JSONObject().put("ok", false).put("error", e.message ?: e.javaClass.simpleName)
+                    }
+                }
+                js("window.kikkerHealthData && window.kikkerHealthData($json)")
+            }
+        }
+
         @JavascriptInterface
         fun testReminder() {
             Reminders.show(this@MainActivity, 999, "Hi from Kikker", "Reminders are working.")
         }
     }
 
+    private fun openHealthConnectStore() {
+        val uri = android.net.Uri.parse("market://details?id=com.google.android.apps.healthdata&url=healthconnect%3A%2F%2Fonboarding")
+        try { startActivity(Intent(Intent.ACTION_VIEW, uri)) } catch (e: Exception) {
+            Toast.makeText(this, "Install Health Connect from the Play Store", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    @Deprecated("Location and notification prompts still use the classic callback")
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_LOCATION) {

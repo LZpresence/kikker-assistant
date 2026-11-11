@@ -50,4 +50,10 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
+    // Health Connect (sleep and activity from the Fitbit app, read on the phone).
+    // 1.1.0-alpha07 is the newest that builds with compileSdk 34 / Kotlin 1.9.
+    implementation("androidx.health.connect:connect-client:1.1.0-alpha07")
+    implementation("androidx.activity:activity-ktx:1.8.2")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }
