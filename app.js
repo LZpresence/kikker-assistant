@@ -338,6 +338,13 @@ function renderToday(now, today, bl, log) {
   }
   html.push(planCard(today));
   if (S.health) html.push(healthCard(today));
+  else if (hBridge() && !S.healthLater) {
+    html.push(`<div class="card"><b>See your sleep and activity</b><p class="note" style="margin:0">Connect Kikker to Health Connect to see last night’s sleep, your steps and heart rate from your watch, and tick off sleep and exercise goals automatically. It only reads, and the data stays on this phone.</p>
+      <div class="row"><button class="btn primary" data-act="hConnect">Connect my watch</button><button class="btn ghost" data-act="hLater">Not now</button></div></div>`);
+  } else if (app() && !hBridge() && !S.healthLater) {
+    html.push(`<div class="card"><b>Update Kikker to see your sleep and activity</b><p class="note" style="margin:0">This version of the app can’t read your watch data yet. Install the latest version over this one; your plans and goals stay.</p>
+      <div class="row"><a class="btn primary" href="https://lzpresence.github.io/kikker-assistant/download/" target="_blank" rel="noopener">Get the update</a><button class="btn ghost" data-act="hLater">Not now</button></div></div>`);
+  }
   if (!S.loc) {
     html.push(`<div class="card"><b>Let Kikker check the sunrise</b><p class="note" style="margin:0">Your location is used only for the morning weather, and stays on this phone.</p><div class="row"><button class="btn primary" data-act="gps">Use my location</button><button class="btn" data-act="tab" data-tab="settings">Search a town</button></div></div>`);
   }
@@ -788,6 +795,7 @@ document.addEventListener('click', async (e) => {
     case 'gps': useGps(); break;
     case 'hConnect': try { hBridge().healthConnect(); } catch { toast('Update the Android app to connect'); } break;
     case 'hRefresh': healthFetch(false); toast('Reading from Health Connect…'); break;
+    case 'hLater': S.healthLater = true; save(true); toast('You can connect any time in Settings'); render(); break;
     case 'hSettings': try { hBridge().healthSettings(); } catch { /* old app */ } break;
     case 'manual': { const g = t.dataset.id; log.manual[g] = !log.manual[g]; save(); render(); break; }
     case 'editGoal': goalSheet(t.dataset.id); break;
