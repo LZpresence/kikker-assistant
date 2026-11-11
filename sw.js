@@ -1,5 +1,5 @@
 // Caches the app shell so it opens instantly and offline. Your data stays in local storage.
-const CACHE = 'kikker-assistant-v2';
+const CACHE = 'kikker-assistant-v3';
 const SHELL = ['./', 'index.html', 'app.js', 'kikker.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

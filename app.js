@@ -223,9 +223,9 @@ function suggestedProject(date) {
 /* ---------- goals ---------- */
 function goalHit(g, date) {
   const log = peekLog(date);
-  if (g.source === 'exercise') return !!log.exercise && log.exercise !== 'rest';
+  if (g.source === 'exercise') return (!!log.exercise && log.exercise !== 'rest') || (!log.exercise && hWorkedOut(date));
   if (g.source === 'project') return !!(log.project && log.project.minutes >= 20);
-  if (g.source === 'bed') return log.bedOnTime === true;
+  if (g.source === 'bed') return log.bedOnTime === true || (log.bedOnTime == null && hBedOnTime(date) === true);
   if (g.source === 'home') return listDone(isWeekend(date) ? 'weekendHome' : 'home', log) && listDone('kid', log);
   if (g.source.startsWith('item:')) return !!log.checks[g.source.slice(5)];
   return !!log.manual[g.id] || peekPlan(date).some((t) => t.goal === g.id && t.done);
@@ -337,6 +337,7 @@ function renderToday(now, today, bl, log) {
       <span class="bicon" aria-hidden="true">☀</span><span><b>Morning briefing</b><small>${ready ? 'Email, calendar, Teams and Slack, sorted. Tap to open.' : `Ready around ${fmt(at(today, S.briefingAt))}.`}</small></span><span class="arrow" aria-hidden="true">›</span></a>`);
   }
   html.push(planCard(today));
+  if (S.health) html.push(healthCard(today));
   if (!S.loc) {
     html.push(`<div class="card"><b>Let Kikker check the sunrise</b><p class="note" style="margin:0">Your location is used only for the morning weather, and stays on this phone.</p><div class="row"><button class="btn primary" data-act="gps">Use my location</button><button class="btn" data-act="tab" data-tab="settings">Search a town</button></div></div>`);
   }
@@ -411,6 +412,162 @@ function nightBody(log, today) {
 const ago = (t) => { const d = Math.round((Date.now() - t) / 864e5); return d <= 0 ? 'today' : d === 1 ? 'yesterday' : `${d} days ago`; };
 const timerText = (start) => { const left = Math.max(0, start + 60 * MIN - Date.now()); return left ? `${Math.floor(left / MIN)}:${pad(Math.floor(left % MIN / 1000))}` : "Hour's up!"; };
 
+/* ---------- health (sleep and activity from Health Connect, Android app only) ----------
+   The Android app reads Health Connect on the phone and calls window.kikkerHealthData(json).
+   We keep the latest copy in S.health; it never leaves the phone. */
+const hBridge = () => { const a = app(); return a && typeof a.healthFetch === 'function' ? a : null; };
+const hDay = (d) => (S.health && S.health.days || []).find((x) => x.date === ymd(d)) || null;
+const longest = (list) => list.slice().sort((a, b) => (b.e - b.s) - (a.e - a.s))[0] || null;
+/** The main sleep that ended on the morning of `d` ("last night"). */
+function hSleepEnding(d) {
+  const from = at(d, '00:00').getTime(), to = at(d, '15:00').getTime();
+  return longest((S.health && S.health.sleep || []).filter((x) => x.e > from && x.e <= to && x.min >= 120));
+}
+/** The main sleep that started on the night of `d` (6 PM to 6 AM). */
+function hSleepStarting(d) {
+  const from = at(d, '18:00').getTime(), to = at(addDays(d, 1), '06:00').getTime();
+  return longest((S.health && S.health.sleep || []).filter((x) => x.s >= from && x.s < to && x.min >= 120));
+}
+/** true/false when the watch saw the night of `d`, null when it has no data for that night. */
+function hBedOnTime(d) {
+  if (!S.health) return null;
+  const sl = hSleepStarting(d);
+  if (!sl) return null;
+  return sl.s <= at(d, nightProf(d).bedLatest).getTime();
+}
+function hWorkedOut(d) {
+  if (!S.health) return false;
+  const from = at(d, '00:00').getTime(), to = at(addDays(d, 1), '00:00').getTime();
+  return (S.health.exercise || []).some((x) => x.s >= from && x.s < to && x.e - x.s >= 15 * MIN);
+}
+const hm = (min) => { min = Math.round(min || 0); return `${Math.floor(min / 60)}h ${pad(min % 60)}m`; };
+const clock = (t) => fmt(new Date(t));
+const n0 = (v) => (v == null ? '–' : Math.round(v).toLocaleString());
+
+function healthFetch(quiet) {
+  const b = hBridge();
+  if (!b) return;
+  healthFetch.quiet = !!quiet;
+  try { b.healthFetch(14); } catch { /* bridge gone */ }
+}
+window.kikkerHealthData = function (d) {
+  if (!d || !d.ok) { S.healthErr = (d && d.error) || 'No data came back'; save(true); if (!healthFetch.quiet) toast(`Health: ${S.healthErr}`); render(); return; }
+  S.health = d; delete S.healthErr; save(true);
+  if (!healthFetch.quiet) toast('Health data updated');
+  render();
+};
+window.kikkerHealthPermission = function (granted, total) {
+  S.healthOn = granted > 0; save(true);
+  toast(granted ? `Connected: ${granted} of ${total} kinds of data` : 'No access given. You can try again any time.');
+  if (granted) healthFetch(); else render();
+};
+
+/** Today view: last night's sleep and today's activity at a glance. */
+function healthCard(today) {
+  const sl = hSleepEnding(today), d = hDay(today) || {};
+  const sleepLine = sl ? `<b class="num">${hm(sl.min)}</b> asleep · ${clock(sl.s)} to ${clock(sl.e)}` : 'No sleep recorded for last night yet';
+  const target = sl && at(addDays(today, -1), nightProf(addDays(today, -1)).bedLatest).getTime();
+  return `<button class="card hcard" data-act="tab" data-tab="goals">
+    <div class="row" style="justify-content:space-between;width:100%"><b>Sleep & activity</b><span class="note">from your watch</span></div>
+    <div class="hrow"><span class="hico" aria-hidden="true">🌙</span><span>${sleepLine}${sl && target ? `<small>${sl.s <= target ? 'In bed on time' : `Later than your ${fmt(new Date(target))} target`}${sl.deep || sl.rem ? ` · deep ${hm(sl.deep)}, REM ${hm(sl.rem)}` : ''}</small>` : ''}</span></div>
+    <div class="hrow"><span class="hico" aria-hidden="true">👟</span><span><b class="num">${n0(d.steps)}</b> steps today${d.exMin ? ` · ${d.exMin} active min` : ''}<small>${d.rhr ? `Resting heart rate ${Math.round(d.rhr)}` : ''}${d.kcal ? `${d.rhr ? ' · ' : ''}${n0(d.kcal)} active cal` : ''}</small></span></div>
+  </button>`;
+}
+
+/** A single-series bar chart (one hue), with the value in each bar's tooltip and an optional target line. */
+function bars(rows, { max, target, fmtV, cls }) {
+  const top = Math.max(max || 0, ...rows.map((r) => r.v || 0), target || 0) || 1;
+  return `<div class="bars ${cls || ''}" role="img" aria-label="${esc(rows.map((r) => `${r.label} ${r.v == null ? 'no data' : fmtV(r.v)}`).join(', '))}">
+    ${target ? `<i class="target" style="bottom:calc(18px + (100% - 18px) * ${(target / top).toFixed(3)})"></i>` : ''}
+    ${rows.map((r) => `<span class="bar${r.hit ? ' hit' : ''}${r.today ? ' today' : ''}" title="${esc(r.label)}: ${r.v == null ? 'no data' : esc(fmtV(r.v))}">
+      <i style="height:${r.v ? Math.max(3, (r.v / top) * 100) : 0}%"></i><em>${esc(r.short)}</em></span>`).join('')}
+  </div>`;
+}
+
+/** Goals tab: the last 7 days of sleep and activity. */
+function healthSection(now) {
+  const today = startOfDay(now), days = [...Array(7)].map((_, i) => addDays(today, i - 6));
+  const L = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+  const nights = days.map((d) => ({ d, sl: hSleepEnding(d) }));
+  const slept = nights.filter((x) => x.sl);
+  const avgSleep = slept.length ? slept.reduce((a, x) => a + x.sl.min, 0) / slept.length : 0;
+  const bedIdx = (t) => { const x = new Date(t); let m = x.getHours() * 60 + x.getMinutes(); if (m < 12 * 60) m += 24 * 60; return m; };
+  const avgBed = slept.length ? slept.reduce((a, x) => a + bedIdx(x.sl.s), 0) / slept.length : 0;
+  const onTime = days.filter((d) => hBedOnTime(addDays(d, -1)) === true).length;
+  const last = hSleepEnding(today);
+  const stepRows = days.map((d) => { const r = hDay(d); return { label: d.toLocaleDateString([], { weekday: 'long' }), short: L[d.getDay()], v: r ? r.steps : null, today: ymd(d) === ymd(today) }; });
+  const stepDays = stepRows.filter((r) => r.v);
+  const rhr = (S.health.days || []).filter((r) => r.rhr).map((r) => r.rhr);
+  const rhrNow = rhr.length ? Math.round(rhr[rhr.length - 1]) : null;
+  const rhrAvg = rhr.length ? Math.round(rhr.reduce((a, b) => a + b, 0) / rhr.length) : null;
+  const weekStart = mondayOf(today).getTime();
+  const workouts = (S.health.exercise || []).filter((x) => x.s >= weekStart).sort((a, b) => b.s - a.s);
+  const stages = last && (last.deep || last.rem || last.light) ? [['Deep', last.deep], ['REM', last.rem], ['Light', last.light], ['Awake', last.awake]] : null;
+  const stageTotal = stages ? stages.reduce((a, [, v]) => a + (v || 0), 0) || 1 : 1;
+  const hr = S.health.hr || [];
+  let hrSvg = '';
+  if (hr.length > 3) {
+    const t0 = at(today, '00:00').getTime(), span = 24 * 60 * MIN;
+    const vs = hr.map((p) => p[1]), lo = Math.min(...vs) - 5, hi = Math.max(...vs) + 5;
+    const pts = hr.map(([t, v]) => `${(((t - t0) / span) * 300).toFixed(1)},${(70 - ((v - lo) / (hi - lo)) * 64).toFixed(1)}`).join(' ');
+    const mx = hr.reduce((a, p) => (p[1] > a[1] ? p : a));
+    hrSvg = `<svg class="hrline" viewBox="0 0 300 80" role="img" aria-label="Heart rate today, ${Math.min(...vs)} to ${Math.max(...vs)} beats per minute">
+      <line x1="0" y1="72" x2="300" y2="72" class="axis"/>${[6, 12, 18].map((h) => `<line x1="${h * 12.5}" y1="70" x2="${h * 12.5}" y2="74" class="axis"/><text x="${h * 12.5}" y="80">${h === 12 ? 'noon' : h < 12 ? `${h} am` : `${h - 12} pm`}</text>`).join('')}
+      <polyline points="${pts}"/><text x="${Math.min(270, (((mx[0] - t0) / span) * 300))}" y="${Math.max(9, 70 - ((mx[1] - lo) / (hi - lo)) * 64 - 4)}" class="peak">${mx[1]}</text></svg>`;
+  }
+  return `<h2>Sleep <small>last 7 nights</small></h2>
+    <div class="card">
+      <div class="stats"><div><b class="num">${slept.length ? hm(avgSleep) : '–'}</b><span>average sleep</span></div>
+        <div><b class="num">${slept.length ? fmt(at(today, `${pad(Math.floor(avgBed / 60) % 24)}:${pad(Math.round(avgBed % 60) % 60)}`)) : '–'}</b><span>average bedtime</span></div>
+        <div><b class="num">${onTime}/7</b><span>in bed on time</span></div></div>
+      ${bars(nights.map(({ d, sl }) => ({ label: `Night before ${d.toLocaleDateString([], { weekday: 'long' })}`, short: L[d.getDay()], v: sl ? sl.min / 60 : null, hit: hBedOnTime(addDays(d, -1)) === true, today: ymd(d) === ymd(today) })), { max: 9, target: 7.5, fmtV: (v) => hm(v * 60), cls: 'sleep' })}
+      <p class="note" style="margin:0">Hours asleep. Faded bars: later than your latest bedtime. Line: 7½ hours.</p>
+      ${stages ? `<div><div class="note" style="margin-bottom:6px">Last night: ${hm(last.min)}, ${clock(last.s)} to ${clock(last.e)}</div>
+        <div class="stagebar" role="img" aria-label="${stages.map(([n, v]) => `${n} ${hm(v)}`).join(', ')}">${stages.map(([n, v]) => `<i class="st-${n.toLowerCase()}" style="flex:${v || 0}"></i>`).join('')}</div>
+        <div class="legend">${stages.map(([n, v]) => `<span><i class="st-${n.toLowerCase()}"></i>${n} <b class="num">${hm(v)}</b> <small>${Math.round(((v || 0) / stageTotal) * 100)}%</small></span>`).join('')}</div></div>` : ''}
+    </div>
+    <h2>Activity <small>last 7 days</small></h2>
+    <div class="card">
+      <div class="stats"><div><b class="num">${stepDays.length ? n0(stepDays.reduce((a, r) => a + r.v, 0) / stepDays.length) : '–'}</b><span>steps a day</span></div>
+        <div><b class="num">${rhrNow ?? '–'}</b><span>resting heart rate${rhrAvg && rhrNow ? ` <small>(${rhrNow - rhrAvg >= 0 ? '+' : ''}${rhrNow - rhrAvg} vs 2 wks)</small>` : ''}</span></div>
+        <div><b class="num">${workouts.length}</b><span>workouts this week</span></div></div>
+      ${bars(stepRows, { target: 8000, fmtV: (v) => `${n0(v)} steps`, cls: 'steps' })}
+      <p class="note" style="margin:0">Steps. Line: 8,000.</p>
+      ${hrSvg ? `<div><div class="note" style="margin-bottom:4px">Heart rate today</div>${hrSvg}</div>` : ''}
+      ${workouts.length ? `<ul class="loglist">${workouts.slice(0, 6).map((w) => `<li><time>${new Date(w.s).toLocaleDateString([], { weekday: 'short' })} · ${clock(w.s)} · ${Math.round((w.e - w.s) / MIN)} min</time>${esc(w.title || w.type)}</li>`).join('')}</ul>` : ''}
+    </div>
+    <p class="note">Updated ${S.health.at ? `${ago(S.health.at) === 'today' ? clock(S.health.at) : ago(S.health.at)}` : '–'} from Health Connect. <button class="linkbtn" data-act="hRefresh">Refresh</button></p>`;
+}
+
+/** Settings: connect, refresh, and a plain view of what came through (the connection test). */
+function healthSettings() {
+  const b = hBridge();
+  if (!b) return `<h2>Sleep & activity</h2><div class="card"><p class="note" style="margin:0">Reading sleep and activity from your watch needs the Kikker Assistant Android app (Health Connect is on the phone, not the web).</p></div>`;
+  let status = 'unavailable';
+  try { status = b.healthStatus(); } catch { /* old app */ }
+  const h = S.health;
+  const srcs = h ? [...new Set([...(h.sleep || []), ...(h.exercise || [])].map((x) => x.src))].filter(Boolean) : [];
+  const nice = (p) => ({ 'com.fitbit.FitbitMobile': 'Fitbit', 'com.google.android.apps.fitness': 'Google Fit', 'com.garmin.android.apps.connectmobile': 'Garmin Connect', 'com.sec.android.app.shealth': 'Samsung Health' }[p] || p);
+  return `<h2>Sleep & activity <small>from Health Connect</small></h2>
+    <div class="card">
+      <p class="note" style="margin:0">${status === 'ok' ? (h ? `Connected. Last update ${clock(h.at)}, ${ago(h.at)}.` : 'Health Connect is on this phone. Connect to let Kikker read your sleep and activity.') : status === 'needs_update' ? 'Health Connect needs to be installed or updated first.' : 'Health Connect isn’t available on this phone.'}
+        Kikker only reads, and the data stays on this phone.</p>
+      <div class="row">${status !== 'unavailable' ? `<button class="btn${h ? '' : ' primary'}" data-act="hConnect">${h ? 'Check permissions' : status === 'needs_update' ? 'Get Health Connect' : 'Connect'}</button>` : ''}
+        ${h || S.healthOn ? '<button class="btn" data-act="hRefresh">Refresh now</button>' : ''}
+        ${status === 'ok' ? '<button class="btn ghost" data-act="hSettings">Open Health Connect</button>' : ''}</div>
+      ${S.healthErr ? `<p class="note" style="margin:0;color:var(--accent)">Last try: ${esc(S.healthErr)}</p>` : ''}
+      ${h ? `<details><summary class="note">Connection test: what came through</summary>
+        <ul class="loglist" style="margin-top:8px">
+          <li><time>Allowed</time>${esc((h.granted || []).map((p) => p.replace(/^READ_/, '').toLowerCase().replace(/_/g, ' ')).join(', ') || 'nothing')}</li>
+          <li><time>Sources</time>${esc(srcs.map(nice).join(', ') || 'none seen yet')}</li>
+          <li><time>Last 14 days</time>${(h.days || []).filter((r) => r.steps).length} days with steps, ${(h.days || []).filter((r) => r.rhr).length} with resting HR, ${(h.sleep || []).length} sleep sessions, ${(h.exercise || []).length} workouts, ${(h.hr || []).length} heart-rate points today</li>
+          ${(h.days || []).slice(-3).reverse().map((r) => `<li><time>${esc(r.date)}</time>${n0(r.steps)} steps · ${r.exMin ?? '–'} active min · ${n0(r.kcal)} cal · RHR ${r.rhr ? Math.round(r.rhr) : '–'} · HR ${r.hrMin ?? '–'}–${r.hrMax ?? '–'}</li>`).join('')}
+          ${(h.errors || []).map((e) => `<li><time>Problem</time>${esc(e)}</li>`).join('')}
+        </ul></details>` : ''}
+      <p class="note" style="margin:0">No data? In the Fitbit app, turn on <b>Health Connect</b> sync (profile, then Health Connect), let it sync, then tap Refresh.</p>
+    </div>`;
+}
+
 /* ---------- planner views ---------- */
 let planOff = 0; // 0 = today, 1 = tomorrow, -1 = yesterday
 const dayName = (off, d) => (off === 0 ? 'Today' : off === 1 ? 'Tomorrow' : off === -1 ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'long' }));
@@ -467,7 +624,7 @@ function renderGoals(now) {
   const mon = mondayOf(now), groups = {};
   for (const g of S.goals) (groups[g.pillar] = groups[g.pillar] || []).push(g);
   const days = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
-  const html = ['<h2>This week <small>Mon–Sun</small></h2>'];
+  const html = [S.health ? healthSection(now) : '', '<h2>This week <small>Mon–Sun</small></h2>'];
   for (const [pillar, gs] of Object.entries(groups)) {
     html.push(`<h2>${esc(pillar)}</h2>`);
     for (const g of gs) {
@@ -482,9 +639,9 @@ function renderGoals(now) {
   $('view-goals').innerHTML = html.join('');
 }
 function sourceLabel(g) {
-  if (g.source === 'exercise') return 'Counts mornings you log exercise';
+  if (g.source === 'exercise') return S.health ? 'Counts mornings you log exercise, or a 15+ min workout from your watch' : 'Counts mornings you log exercise';
   if (g.source === 'project') return 'Counts days with 20+ project minutes';
-  if (g.source === 'bed') return 'Counts nights you check in bed on time';
+  if (g.source === 'bed') return S.health ? 'Counts nights your watch saw you asleep by your latest bedtime' : 'Counts nights you check in bed on time';
   if (g.source === 'home') return 'Counts days the home and bedtime lists are done';
   if (g.source.startsWith('item:')) { const it = Object.values(S.lists).flat().find((i) => i.id === g.source.slice(5)); return it ? `Counts “${esc(it.text)}”` : 'Linked checklist item was removed'; }
   return 'Tap “Did it today” when you do it';
@@ -555,6 +712,7 @@ function renderSettings() {
       <div class="checks"><label><input type="checkbox" id="remOn"${S.remindersOn ? ' checked' : ''}><span>Remind me for each part of the day</span></label></div>
       <p class="note" style="margin:0">${bridge ? 'Reminders come from the Kikker Assistant Android app, and are scheduled 7 days ahead.' : 'Reminders need the Android app. This browser version can’t notify you when it’s closed.'}</p>
       ${bridge && bridge.testReminder ? '<button class="btn" data-act="testRem">Send a test reminder</button>' : ''}</div>
+    ${healthSettings()}
     <h2>Backup <small>your data lives only on this phone</small></h2>
     <div class="card"><div class="row"><button class="btn" data-act="copyBackup">Copy backup</button></div>
       <label class="field">Restore from a backup<textarea id="restoreTxt" placeholder="Paste a backup here"></textarea></label>
@@ -628,6 +786,9 @@ document.addEventListener('click', async (e) => {
       delete log.project; save(); render(); break;
     }
     case 'gps': useGps(); break;
+    case 'hConnect': try { hBridge().healthConnect(); } catch { toast('Update the Android app to connect'); } break;
+    case 'hRefresh': healthFetch(false); toast('Reading from Health Connect…'); break;
+    case 'hSettings': try { hBridge().healthSettings(); } catch { /* old app */ } break;
     case 'manual': { const g = t.dataset.id; log.manual[g] = !log.manual[g]; save(); render(); break; }
     case 'editGoal': goalSheet(t.dataset.id); break;
     case 'goalSave': {
@@ -748,7 +909,10 @@ setInterval(() => {
   if (m !== lastMinute && tab === 'today' && !document.activeElement.matches('input,textarea,select')) { lastMinute = m; render(); }
 }, 20e3);
 document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'visible') { await loadWeather(); render(); scheduleReminders(); }
+  if (document.visibilityState === 'visible') {
+    if ((S.health || S.healthOn) && Date.now() - ((S.health && S.health.at) || 0) > 15 * MIN) healthFetch(true);
+    await loadWeather(); render(); scheduleReminders();
+  }
 });
 
 /* Briefing hand-off: "+ Planner" links open this page with #add=["task", ...] (the browser
@@ -772,6 +936,7 @@ window.addEventListener('hashchange', importFromHash);
 (async function start() {
   render();
   importFromHash();
+  if (S.health || S.healthOn) healthFetch(true);
   await loadWeather();
   render();
   scheduleReminders();
