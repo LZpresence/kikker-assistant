@@ -60,6 +60,8 @@ function upgrade(s) {
     s.plans = {};
     if (s.lists && s.lists.morning) s.lists.morning = s.lists.morning.filter((i) => !/^plan the top 3/i.test(i.text));
   }
+  // Focus tab: app labels and nudge rules.
+  if (!s.focus) s.focus = { on: true, labels: {}, nudgeMin: 20, budget: 60, ideas: ['Play guitar for 15 minutes', 'Text a friend to see what they’re up to this weekend', 'Go for a short walk outside', 'Spend 20 minutes in the shop', 'Look for a game night or meetup this week'] };
   return s;
 }
 function load() {
@@ -70,6 +72,7 @@ let S = load();
 function save(quiet) {
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch { toast('Could not save on this device'); }
   if (!quiet) scheduleReminders();
+  if (typeof pushFocus === 'function') pushFocus();
 }
 
 /* ---------- time helpers ---------- */
@@ -321,6 +324,7 @@ function render() {
   if (tab === 'plan') renderPlan(now);
   if (tab === 'goals') renderGoals(now);
   if (tab === 'projects') renderProjects(now);
+  if (tab === 'focus') renderFocus(now);
   if (tab === 'settings') renderSettings();
 }
 
@@ -575,6 +579,182 @@ function healthSettings() {
     </div>`;
 }
 
+/* ---------- focus (screen time and nudges, Android app only) ----------
+   The Android app reads per-app screen time (Usage access) and calls window.kikkerUsageData(json):
+   {days:[{date, apps:{pkg:[minutes, opens]}, hours:[24 minutes]}], names:{pkg:label}, nudges:[{at,pkg,min,kind,text,after}]}.
+   You label apps as drains or good ones; the app nudges you toward your goals when a drain has had
+   you for a while. Nothing leaves the phone. */
+const DRAIN_GUESS = new Set(['com.twitter.android', 'com.zhiliaoapp.musically', 'com.ss.android.ugc.trill', 'com.reddit.frontpage', 'com.facebook.katana',
+  'com.instagram.android', 'com.instagram.barcelona', 'com.google.android.youtube', 'com.snapchat.android', 'xyz.blueskyweb.app', 'com.cnn.mobile.android.phone',
+  'com.foxnews.android', 'flipboard.app', 'com.google.android.apps.magazines', 'bbc.mobile.news.ww', 'com.nytimes.android', 'com.particlenews.newsbreak',
+  'com.microsoft.amp.apps.bingnews', 'com.yahoo.mobile.client.android.yahoo', 'com.linkedin.android', 'com.pinterest', 'tv.twitch.android.app', 'com.truthsocial.android.app']);
+const GOOD_GUESS = new Set(['com.strava', 'com.meetup', 'com.ultimateguitar.tabs', 'com.ultimateguitar.tuner', 'com.fitbit.FitbitMobile', 'com.duolingo', 'org.thoughtcrime.securesms']);
+const fBridge = () => { const a = app(); return a && typeof a.usageFetch === 'function' ? a : null; };
+const kindOf = (pkg) => S.focus.labels[pkg] || (DRAIN_GUESS.has(pkg) ? 'drain' : GOOD_GUESS.has(pkg) ? 'good' : '');
+const uDay = (d) => (S.usage && S.usage.days || []).find((x) => x.date === ymd(d)) || null;
+const appName = (pkg) => (S.usage && S.usage.names && S.usage.names[pkg]) || pkg.split('.').pop();
+/** Minutes and opens for one day, split into drain / good / everything. */
+function uSum(d) {
+  const r = uDay(d);
+  const out = { drain: 0, good: 0, all: 0, drainOpens: 0, has: !!r };
+  if (!r) return out;
+  for (const [pkg, [min, opens]] of Object.entries(r.apps)) {
+    out.all += min;
+    const k = kindOf(pkg);
+    if (k === 'drain') { out.drain += min; out.drainOpens += opens; }
+    if (k === 'good') out.good += min;
+  }
+  return out;
+}
+/** Phone minutes after your latest bedtime on the night of `d` (hour by hour, so approximate). */
+function lateMinutes(d) {
+  const a = uDay(d), b = uDay(addDays(d, 1));
+  if (!a) return null;
+  const [h, m] = nightProf(d).bedLatest.split(':').map(Number);
+  const from = h + (m >= 30 ? 1 : 0);
+  let n = 0;
+  for (let i = from; i < 24; i++) n += a.hours[i] || 0;
+  if (b) for (let i = 0; i < 5; i++) n += b.hours[i] || 0;
+  return n;
+}
+const mins = (v) => (v >= 60 ? hm(v) : `${Math.round(v)} min`);
+
+function usageFetch(quiet) {
+  const b = fBridge();
+  if (!b) return;
+  usageFetch.quiet = !!quiet;
+  try { b.usageFetch(14); } catch { /* bridge gone */ }
+}
+window.kikkerUsageData = function (d) {
+  if (!d || !d.ok) {
+    S.usageAccess = !!(d && d.access);
+    if (d && d.error && !usageFetch.quiet) toast(`Screen time: ${d.error}`);
+    save(true); render(); return;
+  }
+  S.usage = d; S.usageAccess = true; save(true);
+  pushFocus();
+  if (!usageFetch.quiet) toast('Screen time updated');
+  render();
+};
+
+/** Ideas the nudges rotate through: goals that are behind, the next project step, today's plan, and your own list. */
+function focusIdeas() {
+  const now = new Date(), today = startOfDay(now), out = [];
+  for (const g of S.goals) {
+    const n = weekCount(g, today);
+    if (n < g.target) out.push(`Your “${g.name}” goal is at ${n} of ${g.target} this week. Could you do it now?`);
+  }
+  const pr = suggestedProject(today), st = pr && nextStep(pr);
+  if (pr) out.push(`${pr.name}${st ? `: ${st.text}` : ''}. Even 15 minutes counts.`);
+  const left = peekPlan(today).filter((t) => !t.done && t.top);
+  if (left.length) out.push(`Still on today’s top 3: ${left[0].text}.`);
+  // Mix them so the same kind doesn't come up twice in a row.
+  const own = S.focus.ideas.slice(), auto = out, mixed = [];
+  while (own.length || auto.length) { if (auto.length) mixed.push(auto.shift()); if (own.length) mixed.push(own.shift()); }
+  return mixed.slice(0, 20);
+}
+let focusTimer = null;
+function pushFocus() {
+  clearTimeout(focusTimer);
+  focusTimer = setTimeout(() => {
+    const b = fBridge();
+    if (!b || typeof b.focusConfig !== 'function') return;
+    const drain = new Set();
+    for (const r of (S.usage && S.usage.days) || []) for (const pkg of Object.keys(r.apps)) if (kindOf(pkg) === 'drain') drain.add(pkg);
+    for (const [pkg, k] of Object.entries(S.focus.labels)) if (k === 'drain') drain.add(pkg);
+    try { b.focusConfig(JSON.stringify({ on: S.focus.on, drain: [...drain], nudgeMin: S.focus.nudgeMin, budget: S.focus.budget, ideas: focusIdeas() })); } catch { /* old app */ }
+  }, 300);
+}
+
+function renderFocus(now) {
+  const b = fBridge();
+  if (!b) {
+    $('view-focus').innerHTML = `<h2>Focus</h2><div class="card"><b>Your screen time, for your sake</b>
+      <p class="note" style="margin:0">Focus needs the Kikker Assistant Android app. It reads how long each app is on screen, right on the phone, and nudges you toward your goals and hobbies when an app you’ve marked as a drain has had you for a while.</p></div>`;
+    return;
+  }
+  let access = false;
+  try { access = b.usageAccess(); } catch { /* old app */ }
+  if (!access) {
+    $('view-focus').innerHTML = `<h2>Focus</h2><div class="card"><b>See where your phone time goes</b>
+      <p style="margin:0">Kikker can show how long each app is on screen, and nudge you toward your goals and hobbies when the doomscroll apps have had you for a while.</p>
+      <ol class="note" style="margin:0;padding-left:20px"><li>Tap <b>Allow usage access</b>.</li><li>Find <b>Kikker Assistant</b> and switch it on. Android shows a warning: that’s normal for this permission.</li><li>Come back here.</li></ol>
+      <div class="row"><button class="btn primary" data-act="fAccess">Allow usage access</button></div>
+      <p class="note" style="margin:0">Kikker sees which apps are open and for how long, not what’s on the screen. It stays on this phone.</p></div>`;
+    return;
+  }
+  if (!S.usage) { $('view-focus').innerHTML = '<h2>Focus</h2><div class="card"><p class="note" style="margin:0">Reading your screen time…</p></div>'; return; }
+
+  const today = startOfDay(now), days = [...Array(7)].map((_, i) => addDays(today, i - 6));
+  const L = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+  const t = uSum(today), F = S.focus;
+  const yLate = lateMinutes(addDays(today, -1));
+  const labelled = Object.keys(F.labels).length > 0 || days.some((d) => uSum(d).drain > 0);
+
+  // This week vs last week (Mon–today, and the same days last week).
+  const mon = mondayOf(today), wk = (start, n) => [...Array(n)].map((_, i) => uSum(addDays(start, i)));
+  const nDays = Math.round((today - mon) / 864e5) + 1;
+  const thisW = wk(mon, nDays), lastW = wk(addDays(mon, -7), nDays);
+  const tot = (arr, k) => arr.reduce((a, x) => a + x[k], 0);
+  const projMin = (start, n) => { let m = 0; for (let i = 0; i < n; i++) { const l = peekLog(addDays(start, i)); if (l.project) m += l.project.minutes || 0; } return m; };
+  const haveLast = lastW.some((x) => x.has);
+  const dThis = tot(thisW, 'drain'), dLast = tot(lastW, 'drain');
+
+  // Apps over the last 7 days, most time first.
+  const agg = {};
+  for (const d of days) { const r = uDay(d); if (!r) continue; for (const [pkg, [min, opens]] of Object.entries(r.apps)) { const a = agg[pkg] || (agg[pkg] = { min: 0, opens: 0 }); a.min += min; a.opens += opens; } }
+  const apps = Object.entries(agg).filter(([, a]) => a.min >= 3).sort((a, b) => b[1].min - a[1].min).slice(0, 18);
+  const nd = days.filter((d) => uDay(d)).length || 1;
+
+  const say = !labelled ? 'Mark the apps that drain you below, and Kikker will watch those for you.'
+    : F.budget && t.drain >= F.budget ? `Past your ${F.budget} minutes on drain apps today. What would you rather be doing?`
+    : t.drain < 1 ? 'No time on drain apps yet today. Nice.'
+    : F.budget ? `${mins(Math.max(0, F.budget - t.drain))} left of your ${F.budget}-minute drain budget today.` : `${mins(t.drain)} on drain apps today.`;
+
+  const nudges = ((S.usage.nudges) || []).slice().reverse();
+  const recent = nudges.filter((n) => n.after >= 0);
+  const switched = recent.filter((n) => n.after < 2).length;
+  const seg = (pkg) => { const k = kindOf(pkg) === 'neutral' ? '' : kindOf(pkg); return `<span class="seg" role="group" aria-label="Label ${esc(appName(pkg))}">${[['drain', 'Drain'], ['good', 'Good'], ['', '–']].map(([v, l]) => `<button class="${k === v ? 'on' : ''}${v ? ` k-${v}` : ''}" data-act="fLabel" data-pkg="${esc(pkg)}" data-v="${v}" aria-pressed="${k === v}">${l}</button>`).join('')}</span>`; };
+
+  $('view-focus').innerHTML = `
+    <h2>Focus <small>today</small></h2>
+    <div class="card">
+      <p style="margin:0">${esc(say)}</p>
+      <div class="stats"><div><b class="num${F.budget && t.drain >= F.budget ? ' over' : ''}">${mins(t.drain)}</b><span>drain apps${F.budget ? ` <small>of ${F.budget}</small>` : ''}</span></div>
+        <div><b class="num">${mins(t.good)}</b><span>good apps</span></div>
+        <div><b class="num">${t.drainOpens}</b><span>drain-app opens</span></div></div>
+      <p class="note" style="margin:0">Screen time today ${mins(t.all)}${yLate != null ? ` · about ${mins(yLate)} on the phone after your bedtime last night` : ''}.</p>
+    </div>
+    <h2>Drain apps <small>last 7 days</small></h2>
+    <div class="card">
+      ${bars(days.map((d) => { const s = uSum(d); return { label: d.toLocaleDateString([], { weekday: 'long' }), short: L[d.getDay()], v: s.has ? s.drain / 60 : null, hit: !F.budget || s.drain <= F.budget, today: ymd(d) === ymd(today) }; }), { target: F.budget ? F.budget / 60 : 0, max: 1, fmtV: (v) => mins(v * 60), cls: 'drain' })}
+      <p class="note" style="margin:0">Hours a day on apps marked Drain.${F.budget ? ` Line: your ${F.budget}-minute budget. Orange bars went over.` : ''}</p>
+      <ul class="loglist">
+        <li><time>This week</time>${mins(dThis)} on drains, ${mins(tot(thisW, 'good'))} on good apps, ${mins(projMin(mon, nDays))} logged on projects</li>
+        ${haveLast ? `<li><time>Same days last week</time>${mins(dLast)} on drains${dLast ? ` (${dThis <= dLast ? `${Math.round((1 - dThis / dLast) * 100)}% less now` : `${Math.round((dThis / dLast - 1) * 100)}% more now`})` : ''}, ${mins(projMin(addDays(mon, -7), nDays))} on projects</li>` : ''}
+        ${recent.length ? `<li><time>Nudges, last 7 days</time>${recent.length} sent · you put the app down within 2 minutes after ${switched}</li>` : ''}
+      </ul>
+    </div>
+    <h2>Your apps <small>average a day, last 7 days</small></h2>
+    <div class="card">
+      <p class="note" style="margin:0">Mark the apps that pull you in as <b>Drain</b> (Kikker watches these) and the ones that feed your hobbies and friendships as <b>Good</b>.${apps.some(([p]) => !F.labels[p] && kindOf(p)) ? ' Kikker guessed a few; change any you like.' : ''}</p>
+      <ul class="apps">${apps.map(([pkg, a]) => `<li><span><b>${esc(appName(pkg))}</b><small>${mins(a.min / nd)} · ${Math.round(a.opens / nd)} opens</small></span>${seg(pkg)}</li>`).join('') || '<li class="note">No app time recorded yet.</li>'}</ul>
+    </div>
+    <h2>Nudges</h2>
+    <div class="card">
+      <div class="checks toggle"><label><input type="checkbox" id="fOn"${F.on ? ' checked' : ''}><span>Nudge me when a drain app has had me for a while</span></label></div>
+      <div class="times">
+        <label class="field">After this long on drains<select id="fNudge">${[10, 15, 20, 30, 45, 60].map((m) => `<option value="${m}"${F.nudgeMin === m ? ' selected' : ''}>${m} minutes</option>`).join('')}</select></label>
+        <label class="field">Daily drain budget<select id="fBudget">${[0, 30, 45, 60, 90, 120, 180].map((m) => `<option value="${m}"${F.budget === m ? ' selected' : ''}>${m ? mins(m) : 'No budget'}</option>`).join('')}</select></label>
+      </div>
+      <p class="note" style="margin:0">Counts drain-app time in the last 45 minutes, at most one nudge every 40 minutes, plus one heads-up when you pass your budget. Nudges suggest goals that are behind, your next project step, today’s top 3, and the list below.</p>
+      <label class="field">Things I’d rather be doing <small class="note">one per line</small><textarea id="fIdeas">${esc(F.ideas.join('\n'))}</textarea></label>
+      <div class="row"><button class="btn" data-act="fTest">Show a sample nudge</button><button class="btn ghost" data-act="fRefresh">Refresh</button></div>
+      ${nudges.length ? `<details><summary class="note">Recent nudges</summary><ul class="loglist" style="margin-top:8px">${nudges.slice(0, 8).map((n) => `<li><time>${new Date(n.at).toLocaleDateString([], { weekday: 'short' })} · ${clock(n.at)} · ${esc(appName(n.pkg))}, ${n.min} min${n.after < 0 ? '' : n.after < 2 ? ' · you switched' : ` · ${Math.round(n.after)} more min`}</time>${esc(n.text)}</li>`).join('')}</ul></details>` : ''}
+    </div>
+    <p class="note">Updated ${S.usage.at ? clock(S.usage.at) : '–'}. Kikker sees which apps are open and for how long, not what’s on screen. It stays on this phone.</p>`;
+}
+
 /* ---------- planner views ---------- */
 let planOff = 0; // 0 = today, 1 = tomorrow, -1 = yesterday
 const dayName = (off, d) => (off === 0 ? 'Today' : off === 1 ? 'Tomorrow' : off === -1 ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'long' }));
@@ -797,6 +977,15 @@ document.addEventListener('click', async (e) => {
     case 'hRefresh': healthFetch(false); toast('Reading from Health Connect…'); break;
     case 'hLater': S.healthLater = true; save(true); toast('You can connect any time in Settings'); render(); break;
     case 'hSettings': try { hBridge().healthSettings(); } catch { /* old app */ } break;
+    case 'fAccess': try { fBridge().usageSettings(); } catch { toast('Update the Android app first'); } break;
+    case 'fLabel': {
+      const pkg = t.dataset.pkg, v = t.dataset.v;
+      // '' means "not a drain or a good one"; store it so Kikker's guess doesn't come back.
+      S.focus.labels[pkg] = v || 'neutral';
+      save(true); render(); break;
+    }
+    case 'fTest': try { pushFocus(); setTimeout(() => fBridge().focusTest(), 400); } catch { toast('Update the Android app first'); } break;
+    case 'fRefresh': usageFetch(false); break;
     case 'manual': { const g = t.dataset.id; log.manual[g] = !log.manual[g]; save(); render(); break; }
     case 'editGoal': goalSheet(t.dataset.id); break;
     case 'goalSave': {
@@ -822,7 +1011,7 @@ document.addEventListener('click', async (e) => {
     case 'projSave': { const p = S.projects.find((x) => x.id === t.dataset.p), v = $('pName').value.trim(); if (v) p.name = v; save(); $('sheet').hidden = true; render(); break; }
     case 'projArchive': { const p = S.projects.find((x) => x.id === t.dataset.p); p.archived = !p.archived; save(); $('sheet').hidden = true; render(); break; }
     case 'copyBackup': {
-      const txt = JSON.stringify({ ...S, wx: null });
+      const txt = JSON.stringify({ ...S, wx: null, usage: null });
       try { await navigator.clipboard.writeText(txt); toast('Backup copied. Paste it somewhere safe.'); } catch { $('restoreTxt').value = txt; $('restoreTxt').select(); toast('Select all and copy the text below'); }
       break;
     }
@@ -864,6 +1053,10 @@ document.addEventListener('change', (e) => {
   }
   if (t.id === 'sBriefAt') { if (t.value) { S.briefingAt = t.value; save(); toast('Saved'); } return; }
   if (t.id === 'remOn') { S.remindersOn = t.checked; save(); return; }
+  if (t.id === 'fOn') { S.focus.on = t.checked; save(true); toast(t.checked ? 'Nudges on' : 'Nudges off'); return; }
+  if (t.id === 'fNudge') { S.focus.nudgeMin = +t.value; save(true); render(); return; }
+  if (t.id === 'fBudget') { S.focus.budget = +t.value; save(true); render(); return; }
+  if (t.id === 'fIdeas') { S.focus.ideas = t.value.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 30); save(true); toast('Saved'); return; }
 });
 
 document.addEventListener('submit', async (e) => {
@@ -899,11 +1092,13 @@ function setTab(name) {
   tab = name;
   if (name === 'plan' && tab !== 'plan') planOff = 0;
   tab = name;
-  for (const v of ['today', 'plan', 'goals', 'projects', 'settings']) $(`view-${v}`).hidden = v !== name;
+  for (const v of ['today', 'plan', 'goals', 'focus', 'projects', 'settings']) $(`view-${v}`).hidden = v !== name;
   document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === name));
   window.scrollTo(0, 0);
+  if (name === 'focus' && fBridge() && Date.now() - ((S.usage && S.usage.at) || 0) > 2 * MIN) usageFetch(true);
   render();
 }
+window.kikkerOpenTab = (name) => { if ($(`view-${name}`)) setTab(name); };
 
 /* keep the clock-driven parts fresh */
 setInterval(() => {
@@ -919,6 +1114,7 @@ setInterval(() => {
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible') {
     if ((S.health || S.healthOn) && Date.now() - ((S.health && S.health.at) || 0) > 15 * MIN) healthFetch(true);
+    if (fBridge() && (tab === 'focus' || Date.now() - ((S.usage && S.usage.at) || 0) > 15 * MIN)) usageFetch(true);
     await loadWeather(); render(); scheduleReminders();
   }
 });
@@ -945,6 +1141,8 @@ window.addEventListener('hashchange', importFromHash);
   render();
   importFromHash();
   if (S.health || S.healthOn) healthFetch(true);
+  if (fBridge()) usageFetch(true);
+  pushFocus();
   await loadWeather();
   render();
   scheduleReminders();

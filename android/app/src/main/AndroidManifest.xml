@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
@@ -7,6 +8,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <!-- Focus: screen time per app. You switch it on yourself in Settings > Usage access. -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
 
     <!-- Health Connect: read-only access to sleep and activity -->
     <uses-permission android:name="android.permission.health.READ_STEPS" />
@@ -22,6 +25,11 @@
             <action android:name="android.intent.action.SET_ALARM" />
         </intent>
         <package android:name="com.google.android.apps.healthdata" />
+        <!-- Focus: lets Kikker see app names for the usage chart -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
 
     <application
@@ -71,6 +79,7 @@
         </activity-alias>
 
         <receiver android:name=".ReminderReceiver" android:exported="false" />
+        <receiver android:name=".FocusReceiver" android:exported="false" />
 
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>

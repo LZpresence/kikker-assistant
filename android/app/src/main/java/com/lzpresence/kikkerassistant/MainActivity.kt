@@ -57,6 +57,7 @@ class MainActivity : ComponentActivity() {
             override fun onPageFinished(view: WebView, url: String) {
                 pageReady = true
                 deliverTasks()
+                deliverTab()
             }
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -78,6 +79,7 @@ class MainActivity : ComponentActivity() {
         }
 
         takeTasks(intent)
+        takeTab(intent)
         if (savedInstanceState != null) web.restoreState(savedInstanceState) else web.loadUrl(URL)
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -94,6 +96,27 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         takeTasks(intent)
         deliverTasks()
+        takeTab(intent)
+        deliverTab()
+    }
+
+    /* A Focus nudge opens the app on the Focus tab. */
+    private var pendingTab: String? = null
+
+    private fun takeTab(i: Intent?) {
+        if (i == null) return
+        val t = i.getStringExtra("tab") ?: return
+        if (t.matches(Regex("[a-z]{1,12}"))) pendingTab = t
+        i.removeExtra("tab")
+    }
+
+    private fun deliverTab(attempt: Int = 0) {
+        val t = pendingTab ?: return
+        if (!pageReady) return
+        web.evaluateJavascript("typeof window.kikkerOpenTab === 'function' ? (window.kikkerOpenTab('$t'), 1) : -1") { result ->
+            if (result == "-1" || result == "null") { if (attempt < 20) web.postDelayed({ deliverTab(attempt + 1) }, 500) }
+            else pendingTab = null
+        }
     }
 
     private var gotEmptyLink = false
@@ -219,6 +242,44 @@ class MainActivity : ComponentActivity() {
                 js("window.kikkerHealthData && window.kikkerHealthData($json)")
             }
         }
+
+        /* ---------- Focus (screen time and nudges) ---------- */
+
+        @JavascriptInterface
+        fun usageAccess(): Boolean = Focus.hasAccess(this@MainActivity)
+
+        /** Opens Android's Usage access screen, where Kikker can be switched on. */
+        @JavascriptInterface
+        fun usageSettings() {
+            runOnUiThread {
+                val pkg = android.net.Uri.parse("package:$packageName")
+                try { startActivity(Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS, pkg)) } catch (e: Exception) {
+                    try { startActivity(Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)) } catch (e2: Exception) {
+                        Toast.makeText(this@MainActivity, "Open Settings > Apps > Special access > Usage access", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+
+        /** Reads the last [days] days of app usage in the background and hands it to window.kikkerUsageData(). */
+        @JavascriptInterface
+        fun usageFetch(days: Int) {
+            lifecycleScope.launch {
+                val json = withContext(Dispatchers.IO) {
+                    try { Focus.fetch(this@MainActivity, days.coerceIn(1, 28)) } catch (e: Exception) {
+                        JSONObject().put("ok", false).put("access", Focus.hasAccess(this@MainActivity)).put("error", e.message ?: e.javaClass.simpleName)
+                    }
+                }
+                js("window.kikkerUsageData && window.kikkerUsageData($json)")
+            }
+        }
+
+        /** Saves the nudge rules (drain apps, minutes, ideas) and starts or stops the background check. */
+        @JavascriptInterface
+        fun focusConfig(json: String) = Focus.saveConfig(this@MainActivity, json)
+
+        @JavascriptInterface
+        fun focusTest() = Focus.test(this@MainActivity)
 
         @JavascriptInterface
         fun testReminder() {
