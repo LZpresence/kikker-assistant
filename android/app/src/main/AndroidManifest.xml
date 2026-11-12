@@ -94,6 +94,17 @@
                 android:value="Keeps the daily app-time limits the user set in Kikker: watches which app is in front and shows a pause screen when one passes its limit." />
         </service>
 
+        <!-- Focus: what's playing (title and channel from media sessions); needs Notification access -->
+        <service
+            android:name=".MediaWatch"
+            android:exported="true"
+            android:label="Kikker: what's playing"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <activity
             android:name=".PauseActivity"
             android:exported="false"

@@ -160,7 +160,7 @@ object Focus {
             nudges.put(JSONObject(n.toString()).put("after", Math.round(after * 10) / 10.0))
         }
         return JSONObject().put("ok", true).put("access", true).put("at", now).put("days", dayArr).put("names", names).put("nudges", nudges)
-            .put("passes", Guard.passes(ctx, from)).put("overlay", android.provider.Settings.canDrawOverlays(ctx))
+            .put("passes", Guard.passes(ctx, from)).put("media", Media.list(ctx, from)).put("mediaAccess", Media.hasAccess(ctx)).put("overlay", android.provider.Settings.canDrawOverlays(ctx))
     }
 
     /* ---------- nudges ---------- */
@@ -224,7 +224,9 @@ object Focus {
         if (recentMin >= nudgeMin) {
             val top = drainRecent.groupBy { it.pkg }.maxByOrNull { (_, v) -> v.sumOf { it.e - it.s } }!!.key
             p.edit().putLong("lastNudge", now).apply()
-            notify(ctx, top, "${Math.round(recentMin)} minutes on ${label(ctx, top)}", idea(ctx, c), now, Math.round(recentMin).toInt(), "session")
+            val topic = try { Media.nowTopic(c, top) } catch (e: Exception) { null }
+            val title = if (topic != null) "${Math.round(recentMin)} minutes of $topic on ${label(ctx, top)}" else "${Math.round(recentMin)} minutes on ${label(ctx, top)}"
+            notify(ctx, top, title, idea(ctx, c), now, Math.round(recentMin).toInt(), "session")
         } else if (recentMin >= nudgeMin - 15) {
             // Close: check again right when it would cross, instead of waiting for the next 15-minute tick.
             val am = ctx.getSystemService(AlarmManager::class.java) ?: return

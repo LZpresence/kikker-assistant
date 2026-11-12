@@ -203,7 +203,14 @@ details.card summary{cursor:pointer}
 .meter{display:block;height:5px;border-radius:3px;background:var(--line);margin-top:5px;width:140px;max-width:100%;overflow:hidden}
 .meter i{display:block;height:100%;background:var(--bar-hit);border-radius:3px}
 .meter i.over{background:var(--accent)}
-.limsel{flex:none;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);font-size:14px}
+.topics{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:14px}
+.topics li{display:grid;grid-template-columns:minmax(0,9.5em) 1fr auto;gap:10px;align-items:center}
+.topics li > span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topics b{font:600 15px var(--display);min-width:3.6em;text-align:right}
+.meter.wide{width:auto;margin-top:0;height:8px;border-radius:4px}
+h3.sub{margin:4px 0 -4px;font-size:15px}
+.loglist small.note{font-size:12px}
+.limsel{flex:none;max-width:52%;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);font-size:14px}
 .checks.toggle input:disabled + span{color:var(--dim)}
 .linkbtn{border:0;background:none;color:var(--accent);font:inherit;font-weight:700;cursor:pointer;padding:0}
 

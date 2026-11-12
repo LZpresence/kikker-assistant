@@ -281,6 +281,32 @@ class MainActivity : ComponentActivity() {
         @JavascriptInterface
         fun focusTest() = Focus.test(this@MainActivity)
 
+        /** "What you're watching" needs Notification access (we only read media sessions). */
+        @JavascriptInterface
+        fun mediaAccess(): Boolean = Media.hasAccess(this@MainActivity)
+
+        @JavascriptInterface
+        fun mediaSettings() {
+            runOnUiThread {
+                val cn = android.content.ComponentName(this@MainActivity, MediaWatch::class.java)
+                val detail = Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
+                    .putExtra(android.provider.Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME, cn.flattenToString())
+                try { startActivity(if (Build.VERSION.SDK_INT >= 30) detail else Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) } catch (e: Exception) {
+                    try { startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) } catch (e2: Exception) {
+                        Toast.makeText(this@MainActivity, "Open Settings > Notifications > Device & app notifications", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+
+        /** Kikker's App info page (for "Allow restricted settings" on Android 13+). */
+        @JavascriptInterface
+        fun appInfo() {
+            runOnUiThread {
+                try { startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName"))) } catch (e: Exception) { /* no settings app */ }
+            }
+        }
+
         /** Limits need "Display over other apps" so the pause screen can cover the app. */
         @JavascriptInterface
         fun overlayAccess(): Boolean = android.provider.Settings.canDrawOverlays(this@MainActivity)

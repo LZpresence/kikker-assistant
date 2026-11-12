@@ -51,7 +51,16 @@ function defaults() {
 
 /* Phase 2: the morning briefing is a private claude.ai page that a scheduled Claude routine
    refreshes on weekdays. Change the link in Settings when using another Claude account. */
-const BRIEFING_DEFAULT = 'https://claude.ai/artifact/Hxr4SUGNBZVTyitSkArRPD';
+const DEFAULT_TOPICS = [
+  { name: 'Politics & news', words: ['politics', 'political', 'election', 'congress', 'senate', 'president', 'democrat', 'democrats', 'republican', 'republicans', 'gop', 'maga', 'liberal', 'conservative', 'trump', 'biden', 'harris', 'vance', 'white house', 'supreme court', 'debate', 'tariff', 'tariffs', 'immigration', 'border wall', 'ukraine', 'russia', 'israel', 'gaza', 'iran', 'news', 'breaking', 'cnn', 'fox news', 'msnbc', 'tucker', 'rogan', 'pod save america', 'ben shapiro', 'daily wire', 'the young turks', 'vote', 'voters', 'campaign', 'governor', 'impeachment', 'woke', 'right wing', 'left wing'] },
+  { name: 'Guitar & music', words: ['guitar', 'guitars', 'chord', 'chords', 'riff', 'riffs', 'fender', 'gibson', 'luthier', 'fretboard', 'frets', 'pickup', 'pickups', 'pedal', 'pedals', 'amp', 'scales', 'music theory', 'acoustic', 'electric guitar', 'bass guitar', 'guitar lesson', 'guitar cover'] },
+  { name: 'Woodworking & shop', words: ['woodworking', 'woodworker', 'workshop', 'shop tour', 'table saw', 'router', 'joinery', 'dovetail', 'mortise', 'tenon', 'planer', 'jointer', 'bandsaw', 'cnc', 'lathe', 'epoxy', 'wood finish', 'sanding', 'workbench', 'jig', 'clamps', 'lumber', 'plywood', 'diy'] },
+  { name: 'D&D & games', words: ['d&d', 'dnd', 'dungeons', 'dragons', 'dungeon master', 'critical role', 'ttrpg', 'tabletop', 'campaign setting', 'one shot', 'pathfinder', 'board game', 'board games', 'warhammer', 'minis', 'miniatures', 'game night'] },
+  { name: 'Fitness & outdoors', words: ['workout', 'karate', 'martial arts', 'cycling', 'bike', 'biking', 'running', 'strength', 'mobility', 'stretch', 'stretching', 'hike', 'hiking', 'camping', 'fishing', 'yoga'] },
+  { name: 'Comedy', words: ['comedy', 'stand up', 'standup', 'funny', 'snl', 'sketch', 'jokes', 'roast', 'bloopers', 'memes'] },
+  { name: 'Learning', words: ['explained', 'tutorial', 'how to', 'science', 'history', 'documentary', 'lecture', 'engineering', 'physics', 'learn', 'course'] },
+];
+const BRIEFING_DEFAULT ='https://claude.ai/artifact/Hxr4SUGNBZVTyitSkArRPD';
 function upgrade(s) {
   if (s.briefingUrl === undefined) s.briefingUrl = BRIEFING_DEFAULT;
   if (!s.briefingAt) s.briefingAt = '08:15';
@@ -64,6 +73,8 @@ function upgrade(s) {
   if (!s.focus) s.focus = { on: true, labels: {}, nudgeMin: 20, budget: 60, ideas: ['Play guitar for 15 minutes', 'Text a friend to see what they’re up to this weekend', 'Go for a short walk outside', 'Spend 20 minutes in the shop', 'Look for a game night or meetup this week'] };
   // Focus limits (phase 2): YouTube starts at 45 minutes a day; change it on the Focus tab.
   if (!s.focus.limits) Object.assign(s.focus, { limits: { 'com.google.android.youtube': 45 }, pause: true, pauseBudget: false });
+  // What you're watching: topics are matched by whole words in the title and channel.
+  if (!s.focus.topics) Object.assign(s.focus, { topics: DEFAULT_TOPICS.map((t) => ({ ...t, words: t.words.slice() })), channels: {} });
   return s;
 }
 function load() {
@@ -664,7 +675,8 @@ function pushFocus() {
     const drain = new Set();
     for (const r of (S.usage && S.usage.days) || []) for (const pkg of Object.keys(r.apps)) if (kindOf(pkg) === 'drain') drain.add(pkg);
     for (const [pkg, k] of Object.entries(S.focus.labels)) if (k === 'drain') drain.add(pkg);
-    try { b.focusConfig(JSON.stringify({ on: S.focus.on, drain: [...drain], nudgeMin: S.focus.nudgeMin, budget: S.focus.budget, ideas: focusIdeas(), pause: S.focus.pause, pauseBudget: S.focus.pauseBudget, limits: S.focus.limits })); } catch { /* old app */ }
+    try { b.focusConfig(JSON.stringify({ on: S.focus.on, drain: [...drain], nudgeMin: S.focus.nudgeMin, budget: S.focus.budget, ideas: focusIdeas(), pause: S.focus.pause, pauseBudget: S.focus.pauseBudget, limits: S.focus.limits,
+      topics: S.focus.topics.map((t) => ({ name: t.name, words: t.words })), channels: S.focus.channels })); } catch { /* old app */ }
   }, 300);
 }
 
@@ -727,6 +739,7 @@ function renderFocus(now) {
         <div><b class="num">${t.drainOpens}</b><span>drain-app opens</span></div></div>
       <p class="note" style="margin:0">Screen time today ${mins(t.all)}${yLate != null ? ` · about ${mins(yLate)} on the phone after your bedtime last night` : ''}.</p>
     </div>
+    ${watchCard(b)}
     <h2>Drain apps <small>last 7 days</small></h2>
     <div class="card">
       ${bars(days.map((d) => { const s = uSum(d); return { label: d.toLocaleDateString([], { weekday: 'long' }), short: L[d.getDay()], v: s.has ? s.drain / 60 : null, hit: !F.budget || s.drain <= F.budget, today: ymd(d) === ymd(today) }; }), { target: F.budget ? F.budget / 60 : 0, max: 1, fmtV: (v) => mins(v * 60), cls: 'drain' })}
@@ -756,6 +769,78 @@ function renderFocus(now) {
       ${nudges.length ? `<details><summary class="note">Recent nudges</summary><ul class="loglist" style="margin-top:8px">${nudges.slice(0, 8).map((n) => `<li><time>${new Date(n.at).toLocaleDateString([], { weekday: 'short' })} · ${clock(n.at)} · ${esc(appName(n.pkg))}, ${n.min} min${n.after < 0 ? '' : n.after < 2 ? ' · you switched' : ` · ${Math.round(n.after)} more min`}</time>${esc(n.text)}</li>`).join('')}</ul></details>` : ''}
     </div>
     <p class="note">Updated ${S.usage.at ? clock(S.usage.at) : '–'}. Kikker sees which apps are open and for how long, not what’s on screen. It stays on this phone.</p>`;
+}
+
+/* What you're watching: plays from the Android app's "now playing" reader,
+   {p: app, t: title, c: channel, s, e, off: screen was off}. Topics are matched by whole words. */
+const normText = (s) => ` ${String(s || '').toLowerCase().replace(/[^\p{L}\p{N}&']+/gu, ' ').trim()} `;
+function topicOf(title, channel) {
+  const pick = S.focus.channels[channel];
+  if (pick) return pick === '_other' ? null : pick;
+  const text = normText(`${title} ${channel}`);
+  let best = null, bestN = 0;
+  for (const tp of S.focus.topics) {
+    let n = 0;
+    for (const w0 of tp.words) { const w = normText(w0).trim(); if (w && (text.includes(` ${w} `) || text.includes(` ${w}s `))) n++; }
+    if (n > bestN) { bestN = n; best = tp.name; }
+  }
+  return best;
+}
+const playMin = (x) => Math.max(0, (x.e - x.s) / MIN);
+
+function watchCard(b) {
+  if (typeof b.mediaAccess !== 'function') return '';
+  let access = false;
+  try { access = b.mediaAccess(); } catch { /* old app */ }
+  if (!access) {
+    return `<h2>What you’re watching</h2><div class="card">
+      <p style="margin:0">Kikker can tell what you watch and listen to on YouTube, podcasts and music apps: the title and channel, the same info as your lock screen. It sorts them into topics, so you can see how much is politics and how much is guitar.</p>
+      <ol class="note" style="margin:0;padding-left:20px"><li>Tap <b>Allow</b> and switch on <b>Kikker: what’s playing</b>.</li>
+        <li>Switch greyed out, or a “Restricted setting” message? Tap <b>App info</b>, then the <b>⋮</b> menu at the top right, then <b>Allow restricted settings</b>. Then try step 1 again.</li></ol>
+      <div class="row"><button class="btn primary" data-act="fMedia">Allow</button><button class="btn ghost" data-act="fAppInfo">App info</button></div>
+      <p class="note" style="margin:0">Android calls this Notification access. Kikker only reads what’s playing and ignores your notifications. It stays on this phone.</p></div>`;
+  }
+  const plays = (S.usage && S.usage.media) || [];
+  if (!plays.length) return `<h2>What you’re watching</h2><div class="card"><p class="note" style="margin:0">Nothing has played since you switched this on. Play something on YouTube and it’ll show up here.</p></div>`;
+
+  const today = startOfDay(new Date()).getTime(), week = addDays(startOfDay(new Date()), -6).getTime();
+  const wk = plays.filter((x) => x.e > week);
+  const sum = (arr) => arr.reduce((a, x) => a + playMin(x), 0);
+  const watched = sum(wk.filter((x) => !x.off)), listened = sum(wk.filter((x) => x.off)), todayMin = sum(plays.filter((x) => x.e > today));
+  const byTopic = {}, byChan = {};
+  for (const x of wk) {
+    const tp = topicOf(x.t, x.c) || 'Other', m = playMin(x);
+    byTopic[tp] = (byTopic[tp] || 0) + m;
+    const key = x.c || '(no channel)';
+    const ch = byChan[key] || (byChan[key] = { min: 0, apps: new Set(), n: 0, tp: {} });
+    ch.min += m; ch.apps.add(x.p); ch.n++; ch.tp[tp] = (ch.tp[tp] || 0) + m;
+  }
+  const total = watched + listened || 1;
+  const topics = Object.entries(byTopic).sort((a, c) => c[1] - a[1]);
+  const top = topics.find(([n]) => n !== 'Other');
+  const chans = Object.entries(byChan).sort((a, c) => c[1].min - a[1].min).slice(0, 10);
+  const topicOpts = (ch) => {
+    const cur = S.focus.channels[ch] || '';
+    // "Auto" shows what this channel's videos mostly sorted into.
+    const guess = Object.entries(byChan[ch].tp).sort((a, c) => c[1] - a[1])[0], auto = guess && guess[0] !== 'Other' ? guess[0] : null;
+    return `<option value=""${cur ? '' : ' selected'}>Auto${auto ? ` (${esc(auto)})` : ''}</option>${S.focus.topics.map((tp) => `<option value="${esc(tp.name)}"${cur === tp.name ? ' selected' : ''}>${esc(tp.name)}</option>`).join('')}<option value="_other"${cur === '_other' ? ' selected' : ''}>Other</option>`;
+  };
+  const recent = plays.slice().sort((a, c) => c.s - a.s).slice(0, 12);
+  return `<h2>What you’re watching <small>last 7 days</small></h2>
+    <div class="card">
+      <div class="stats"><div><b class="num">${mins(watched)}</b><span>watching</span></div>
+        <div><b class="num">${mins(listened)}</b><span>listening, screen off</span></div>
+        <div><b class="num">${top ? `${Math.round((top[1] / total) * 100)}%` : '–'}</b><span>${top ? esc(top[0]) : 'top topic'}</span></div></div>
+      <ul class="topics">${topics.map(([n, m]) => `<li><span>${esc(n)}</span><span class="meter wide" aria-hidden="true"><i style="width:${Math.max(2, (m / topics[0][1]) * 100).toFixed(0)}%"${n === 'Politics & news' ? ' class="over"' : ''}></i></span><b class="num">${mins(m)}</b></li>`).join('')}</ul>
+      <p class="note" style="margin:0">Today so far: ${mins(todayMin)}. Sorted by words in the title and channel, so it’s an estimate. Fix a channel below and it sticks.</p>
+      <h3 class="sub">Top channels</h3>
+      <ul class="apps">${chans.map(([ch, v]) => `<li><span><b>${esc(ch)}</b><small>${mins(v.min)} · ${v.n} play${v.n === 1 ? '' : 's'} · ${esc([...v.apps].map(appName).join(', '))}</small></span>
+        <select class="limsel" data-chan="${esc(ch)}" aria-label="Topic for ${esc(ch)}">${topicOpts(ch)}</select></li>`).join('')}</ul>
+      <details><summary class="note">Recent plays</summary><ul class="loglist" style="margin-top:8px">${recent.map((x) => `<li><time>${new Date(x.s).toLocaleDateString([], { weekday: 'short' })} · ${clock(x.s)} · ${mins(playMin(x))}${x.off ? ' · screen off' : ''}${x.now ? ' · playing now' : ''} · ${esc(topicOf(x.t, x.c) || 'Other')}</time>${esc(x.t)}${x.c ? ` <small class="note">— ${esc(x.c)}</small>` : ''}</li>`).join('')}</ul></details>
+      <details><summary class="note">Edit topics</summary>
+        <label class="field" style="margin-top:8px">One topic per line: name, a colon, then words or phrases separated by commas<textarea id="fTopics" rows="8">${esc(S.focus.topics.map((tp) => `${tp.name}: ${tp.words.join(', ')}`).join('\n'))}</textarea></label>
+        <button class="linkbtn" data-act="fTopicsReset">Reset to Kikker’s topics</button></details>
+    </div>`;
 }
 
 /** Limits: per-app daily minutes, kept by the Android app's pause screen. */
@@ -1020,6 +1105,9 @@ document.addEventListener('click', async (e) => {
     case 'fTest': try { pushFocus(); setTimeout(() => fBridge().focusTest(), 400); } catch { toast('Update the Android app first'); } break;
     case 'fRefresh': usageFetch(false); break;
     case 'fOverlay': try { fBridge().overlaySettings(); } catch { toast('Update the Android app first'); } break;
+    case 'fMedia': try { fBridge().mediaSettings(); } catch { toast('Update the Android app first'); } break;
+    case 'fAppInfo': try { fBridge().appInfo(); } catch { /* old app */ } break;
+    case 'fTopicsReset': S.focus.topics = DEFAULT_TOPICS.map((tp) => ({ ...tp, words: tp.words.slice() })); save(true); toast('Topics reset'); render(); break;
     case 'manual': { const g = t.dataset.id; log.manual[g] = !log.manual[g]; save(); render(); break; }
     case 'editGoal': goalSheet(t.dataset.id); break;
     case 'goalSave': {
@@ -1089,6 +1177,17 @@ document.addEventListener('change', (e) => {
   if (t.id === 'remOn') { S.remindersOn = t.checked; save(); return; }
   if (t.id === 'fOn') { S.focus.on = t.checked; save(true); toast(t.checked ? 'Nudges on' : 'Nudges off'); return; }
   if (t.dataset.limit) { const v = +t.value; if (v) S.focus.limits[t.dataset.limit] = v; else delete S.focus.limits[t.dataset.limit]; save(true); toast(v ? `Limit set: ${mins(v)} a day` : 'Limit removed'); render(); return; }
+  if (t.dataset.chan != null) { if (t.value) S.focus.channels[t.dataset.chan] = t.value; else delete S.focus.channels[t.dataset.chan]; save(true); render(); return; }
+  if (t.id === 'fTopics') {
+    const topics = t.value.split('\n').map((line) => {
+      const i = line.indexOf(':');
+      if (i < 1) return null;
+      const words = line.slice(i + 1).split(',').map((w) => w.trim()).filter(Boolean);
+      return words.length ? { name: line.slice(0, i).trim().slice(0, 40), words } : null;
+    }).filter(Boolean);
+    if (!topics.length) { toast('Each line needs a name, a colon, then words'); return; }
+    S.focus.topics = topics; save(true); toast('Topics saved'); render(); return;
+  }
   if (t.id === 'fAddLimit') { if (t.value) { S.focus.limits[t.value] = 30; save(true); toast(`Limit set: 30 min a day for ${appName(t.value)}`); render(); } return; }
   if (t.id === 'fPause') { S.focus.pause = t.checked; save(true); toast(t.checked ? 'Limits on' : 'Limits off'); return; }
   if (t.id === 'fPauseBudget') { S.focus.pauseBudget = t.checked; save(true); return; }
