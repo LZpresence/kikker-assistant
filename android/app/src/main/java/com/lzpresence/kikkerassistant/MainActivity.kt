@@ -281,6 +281,21 @@ class MainActivity : ComponentActivity() {
         @JavascriptInterface
         fun focusTest() = Focus.test(this@MainActivity)
 
+        /** Limits need "Display over other apps" so the pause screen can cover the app. */
+        @JavascriptInterface
+        fun overlayAccess(): Boolean = android.provider.Settings.canDrawOverlays(this@MainActivity)
+
+        @JavascriptInterface
+        fun overlaySettings() {
+            runOnUiThread {
+                try {
+                    startActivity(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:$packageName")))
+                } catch (e: Exception) {
+                    Toast.makeText(this@MainActivity, "Open Settings > Apps > Special access > Display over other apps", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+
         @JavascriptInterface
         fun testReminder() {
             Reminders.show(this@MainActivity, 999, "Hi from Kikker", "Reminders are working.")

@@ -200,6 +200,11 @@ details.card summary{cursor:pointer}
 .seg button.on{background:var(--bg);color:var(--fg)}
 .seg button.on.k-drain{background:var(--accent-soft);color:var(--accent)}
 .seg button.on.k-good{background:var(--good-soft);color:var(--good)}
+.meter{display:block;height:5px;border-radius:3px;background:var(--line);margin-top:5px;width:140px;max-width:100%;overflow:hidden}
+.meter i{display:block;height:100%;background:var(--bar-hit);border-radius:3px}
+.meter i.over{background:var(--accent)}
+.limsel{flex:none;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);font-size:14px}
+.checks.toggle input:disabled + span{color:var(--dim)}
 .linkbtn{border:0;background:none;color:var(--accent);font:inherit;font-weight:700;cursor:pointer;padding:0}
 
 /* Tabs */

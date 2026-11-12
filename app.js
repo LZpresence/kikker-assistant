@@ -62,6 +62,8 @@ function upgrade(s) {
   }
   // Focus tab: app labels and nudge rules.
   if (!s.focus) s.focus = { on: true, labels: {}, nudgeMin: 20, budget: 60, ideas: ['Play guitar for 15 minutes', 'Text a friend to see what they’re up to this weekend', 'Go for a short walk outside', 'Spend 20 minutes in the shop', 'Look for a game night or meetup this week'] };
+  // Focus limits (phase 2): YouTube starts at 45 minutes a day; change it on the Focus tab.
+  if (!s.focus.limits) Object.assign(s.focus, { limits: { 'com.google.android.youtube': 45 }, pause: true, pauseBudget: false });
   return s;
 }
 function load() {
@@ -662,7 +664,7 @@ function pushFocus() {
     const drain = new Set();
     for (const r of (S.usage && S.usage.days) || []) for (const pkg of Object.keys(r.apps)) if (kindOf(pkg) === 'drain') drain.add(pkg);
     for (const [pkg, k] of Object.entries(S.focus.labels)) if (k === 'drain') drain.add(pkg);
-    try { b.focusConfig(JSON.stringify({ on: S.focus.on, drain: [...drain], nudgeMin: S.focus.nudgeMin, budget: S.focus.budget, ideas: focusIdeas() })); } catch { /* old app */ }
+    try { b.focusConfig(JSON.stringify({ on: S.focus.on, drain: [...drain], nudgeMin: S.focus.nudgeMin, budget: S.focus.budget, ideas: focusIdeas(), pause: S.focus.pause, pauseBudget: S.focus.pauseBudget, limits: S.focus.limits })); } catch { /* old app */ }
   }, 300);
 }
 
@@ -735,6 +737,7 @@ function renderFocus(now) {
         ${recent.length ? `<li><time>Nudges, last 7 days</time>${recent.length} sent · you put the app down within 2 minutes after ${switched}</li>` : ''}
       </ul>
     </div>
+    ${limitsCard(b, agg, nd)}
     <h2>Your apps <small>average a day, last 7 days</small></h2>
     <div class="card">
       <p class="note" style="margin:0">Mark the apps that pull you in as <b>Drain</b> (Kikker watches these) and the ones that feed your hobbies and friendships as <b>Good</b>.${apps.some(([p]) => !F.labels[p] && kindOf(p)) ? ' Kikker guessed a few; change any you like.' : ''}</p>
@@ -753,6 +756,36 @@ function renderFocus(now) {
       ${nudges.length ? `<details><summary class="note">Recent nudges</summary><ul class="loglist" style="margin-top:8px">${nudges.slice(0, 8).map((n) => `<li><time>${new Date(n.at).toLocaleDateString([], { weekday: 'short' })} · ${clock(n.at)} · ${esc(appName(n.pkg))}, ${n.min} min${n.after < 0 ? '' : n.after < 2 ? ' · you switched' : ` · ${Math.round(n.after)} more min`}</time>${esc(n.text)}</li>`).join('')}</ul></details>` : ''}
     </div>
     <p class="note">Updated ${S.usage.at ? clock(S.usage.at) : '–'}. Kikker sees which apps are open and for how long, not what’s on screen. It stays on this phone.</p>`;
+}
+
+/** Limits: per-app daily minutes, kept by the Android app's pause screen. */
+function limitsCard(b, agg, nd) {
+  const F = S.focus, today = startOfDay(new Date()), r = uDay(today);
+  if (typeof b.overlayAccess !== 'function') return `<h2>Limits</h2><div class="card"><p class="note" style="margin:0">Update the Android app to set limits.</p></div>`;
+  let overlay = false;
+  try { overlay = b.overlayAccess(); } catch { /* old app */ }
+  const usedToday = (pkg) => (r && r.apps[pkg] ? r.apps[pkg][0] : 0);
+  // Rows: apps with a limit, then drain apps you've used this week.
+  const pkgs = [...new Set([...Object.keys(F.limits), ...Object.keys(agg).filter((p) => kindOf(p) === 'drain').sort((a, c) => agg[c].min - agg[a].min)])];
+  const others = Object.keys(agg).filter((p) => !pkgs.includes(p)).sort((a, c) => agg[c].min - agg[a].min).slice(0, 25);
+  const opts = (cur) => [0, 15, 30, 45, 60, 90, 120, 180].map((m) => `<option value="${m}"${(cur || 0) === m ? ' selected' : ''}>${m ? mins(m) : 'No limit'}</option>`).join('');
+  const passes = ((S.usage && S.usage.passes) || []).filter((x) => x.at >= today.getTime()).reverse();
+  const row = (pkg) => {
+    const lim = F.limits[pkg], u = usedToday(pkg), plus = passes.filter((x) => x.pkg === pkg && !x.budget).reduce((a, x) => a + (x.add || 0), 0);
+    return `<li><span><b>${esc(appName(pkg))}</b><small>${lim ? `${mins(u)} of ${mins(lim)}${plus ? ` + ${plus} extra` : ''} today` :`${mins(agg[pkg] ? agg[pkg].min / nd : 0)} a day lately`}</small>
+      ${lim ? `<span class="meter" aria-hidden="true"><i style="width:${Math.min(100, (u / lim) * 100).toFixed(0)}%"${u >= lim ? ' class="over"' : ''}></i></span>` : ''}</span>
+      <select class="limsel" data-limit="${esc(pkg)}" aria-label="Daily limit for ${esc(appName(pkg))}">${opts(lim)}</select></li>`;
+  };
+  return `<h2>Limits <small>a pause screen when you hit them</small></h2>
+    <div class="card">
+      ${overlay ? '' : `<div><b>One more permission</b><p class="note" style="margin:4px 0 8px">The pause screen needs <b>Display over other apps</b>. Tap below, switch Kikker Assistant on, and come back.</p><button class="btn primary" data-act="fOverlay">Allow the pause screen</button></div>`}
+      <div class="checks toggle"><label><input type="checkbox" id="fPause"${F.pause ? ' checked' : ''}><span>Pause apps when they hit their limit</span></label>
+        <label><input type="checkbox" id="fPauseBudget"${F.pauseBudget ? ' checked' : ''}${F.budget ? '' : ' disabled'}><span>Also pause drain apps when I pass my daily budget${F.budget ? ` (${mins(F.budget)})` : ' (set a budget below)'}</span></label></div>
+      <ul class="apps">${pkgs.map(row).join('') || '<li class="note">Mark some apps as Drain below, or add a limit for any app.</li>'}</ul>
+      ${others.length ? `<label class="field">Add a limit for another app<select id="fAddLimit"><option value="">Pick an app</option>${others.map((p) => `<option value="${esc(p)}">${esc(appName(p))}</option>`).join('')}</select></label>` : ''}
+      <p class="note" style="margin:0">At the limit, Kikker covers the app. Close it, or after a 10-second breather take 10 or 30 more minutes for today (or 30 for “just listening”). Limits reset at midnight. Time with the screen off doesn’t count.</p>
+      ${passes.length ? `<ul class="loglist">${passes.slice(0, 6).map((x) => `<li><time>${clock(x.at)} · ${esc(appName(x.pkg))}${x.budget ? ' (drain budget)' : ''}</time>${x.kind === 'closed' ? 'Closed it at the pause screen ✓' : x.kind === 'listening' ? `Just listening, +${x.add} min` : `Took ${x.add} more min`}</li>`).join('')}</ul>` : ''}
+    </div>`;
 }
 
 /* ---------- planner views ---------- */
@@ -986,6 +1019,7 @@ document.addEventListener('click', async (e) => {
     }
     case 'fTest': try { pushFocus(); setTimeout(() => fBridge().focusTest(), 400); } catch { toast('Update the Android app first'); } break;
     case 'fRefresh': usageFetch(false); break;
+    case 'fOverlay': try { fBridge().overlaySettings(); } catch { toast('Update the Android app first'); } break;
     case 'manual': { const g = t.dataset.id; log.manual[g] = !log.manual[g]; save(); render(); break; }
     case 'editGoal': goalSheet(t.dataset.id); break;
     case 'goalSave': {
@@ -1054,6 +1088,10 @@ document.addEventListener('change', (e) => {
   if (t.id === 'sBriefAt') { if (t.value) { S.briefingAt = t.value; save(); toast('Saved'); } return; }
   if (t.id === 'remOn') { S.remindersOn = t.checked; save(); return; }
   if (t.id === 'fOn') { S.focus.on = t.checked; save(true); toast(t.checked ? 'Nudges on' : 'Nudges off'); return; }
+  if (t.dataset.limit) { const v = +t.value; if (v) S.focus.limits[t.dataset.limit] = v; else delete S.focus.limits[t.dataset.limit]; save(true); toast(v ? `Limit set: ${mins(v)} a day` : 'Limit removed'); render(); return; }
+  if (t.id === 'fAddLimit') { if (t.value) { S.focus.limits[t.value] = 30; save(true); toast(`Limit set: 30 min a day for ${appName(t.value)}`); render(); } return; }
+  if (t.id === 'fPause') { S.focus.pause = t.checked; save(true); toast(t.checked ? 'Limits on' : 'Limits off'); return; }
+  if (t.id === 'fPauseBudget') { S.focus.pauseBudget = t.checked; save(true); return; }
   if (t.id === 'fNudge') { S.focus.nudgeMin = +t.value; save(true); render(); return; }
   if (t.id === 'fBudget') { S.focus.budget = +t.value; save(true); render(); return; }
   if (t.id === 'fIdeas') { S.focus.ideas = t.value.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 30); save(true); toast('Saved'); return; }

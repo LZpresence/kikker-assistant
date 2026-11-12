@@ -33,7 +33,7 @@ object Focus {
     private const val CHANNEL = "focus"
     private const val WINDOW_MIN = 45L   // look-back for "a while on drain apps"
     private const val COOLDOWN_MIN = 40L // at most one nudge per this many minutes
-    private const val MIN = 60_000L
+    const val MIN = 60_000L
 
     fun hasAccess(ctx: Context): Boolean {
         val ops = ctx.getSystemService(AppOpsManager::class.java) ?: return false
@@ -45,10 +45,10 @@ object Focus {
 
     /* ---------- reading usage ---------- */
 
-    private class Span(val pkg: String, val s: Long, val e: Long)
+    class Span(val pkg: String, val s: Long, val e: Long)
 
     /** Foreground spans of launchable apps (not Kikker) between [from] and [to], plus app opens. */
-    private fun spans(ctx: Context, from: Long, to: Long, opens: MutableList<Pair<String, Long>>? = null): List<Span> {
+    fun spans(ctx: Context, from: Long, to: Long, opens: MutableList<Pair<String, Long>>? = null): List<Span> {
         val usm = ctx.getSystemService(UsageStatsManager::class.java) ?: return emptyList()
         // Start a little early so an app already open at `from` is counted from `from`.
         val ev = usm.queryEvents(from - 3 * 60 * MIN, to)
@@ -90,15 +90,15 @@ object Focus {
     private const val KEYGUARD_SHOWN = 17  // UsageEvents.Event.KEYGUARD_SHOWN (API 28)
     private const val SHUTDOWN = 26        // UsageEvents.Event.DEVICE_SHUTDOWN (API 29)
 
-    private fun label(ctx: Context, p: String): String = try {
+    fun label(ctx: Context, p: String): String = try {
         ctx.packageManager.getApplicationLabel(ctx.packageManager.getApplicationInfo(p, 0)).toString()
     } catch (e: Exception) { p }
 
-    private fun midnight(t: Long): Long = Calendar.getInstance().apply {
+    fun midnight(t: Long): Long = Calendar.getInstance().apply {
         timeInMillis = t; set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
     }.timeInMillis
 
-    private fun ymd(t: Long): String = Calendar.getInstance().run {
+    fun ymd(t: Long): String = Calendar.getInstance().run {
         timeInMillis = t; "%04d-%02d-%02d".format(get(Calendar.YEAR), get(Calendar.MONTH) + 1, get(Calendar.DAY_OF_MONTH))
     }
 
@@ -160,13 +160,14 @@ object Focus {
             nudges.put(JSONObject(n.toString()).put("after", Math.round(after * 10) / 10.0))
         }
         return JSONObject().put("ok", true).put("access", true).put("at", now).put("days", dayArr).put("names", names).put("nudges", nudges)
+            .put("passes", Guard.passes(ctx, from)).put("overlay", android.provider.Settings.canDrawOverlays(ctx))
     }
 
     /* ---------- nudges ---------- */
 
-    private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-    private fun config(ctx: Context): JSONObject = try { JSONObject(prefs(ctx).getString("config", "{}")!!) } catch (e: Exception) { JSONObject() }
-    private fun drainSet(ctx: Context): Set<String> {
+    fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    fun config(ctx: Context): JSONObject = try { JSONObject(prefs(ctx).getString("config", "{}")!!) } catch (e: Exception) { JSONObject() }
+    fun drainSet(ctx: Context): Set<String> {
         val a = config(ctx).optJSONArray("drain") ?: return emptySet()
         return (0 until a.length()).map { a.optString(it) }.toSet()
     }
@@ -175,6 +176,7 @@ object Focus {
         val c = try { JSONObject(json) } catch (e: Exception) { return }
         prefs(ctx).edit().putString("config", c.toString()).apply()
         arm(ctx)
+        Guard.sync(ctx)
     }
 
     /** Starts (or stops) the repeating check, matching the saved settings. */
@@ -231,7 +233,7 @@ object Focus {
     }
 
     /** The next idea from the list the web app sent (goals behind, project steps, hobbies), rotating. */
-    private fun idea(ctx: Context, c: JSONObject): String {
+    fun idea(ctx: Context, c: JSONObject): String {
         val ideas = c.optJSONArray("ideas")
         if (ideas == null || ideas.length() == 0) return "Up for something better? Kikker has your goals and projects ready."
         val p = prefs(ctx)

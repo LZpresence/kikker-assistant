@@ -10,6 +10,10 @@
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
     <!-- Focus: screen time per app. You switch it on yourself in Settings > Usage access. -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
+    <!-- Focus limits: a small watcher while the screen is on, and the pause screen over an app past its limit -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- Health Connect: read-only access to sleep and activity -->
     <uses-permission android:name="android.permission.health.READ_STEPS" />
@@ -80,6 +84,23 @@
 
         <receiver android:name=".ReminderReceiver" android:exported="false" />
         <receiver android:name=".FocusReceiver" android:exported="false" />
+
+        <service
+            android:name=".GuardService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the daily app-time limits the user set in Kikker: watches which app is in front and shows a pause screen when one passes its limit." />
+        </service>
+
+        <activity
+            android:name=".PauseActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleInstance"
+            android:taskAffinity="com.lzpresence.kikkerassistant.pause"
+            android:theme="@style/Kikker" />
 
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
